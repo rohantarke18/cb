@@ -6,13 +6,13 @@ import { useNotifications } from '../context/NotificationContext';
 import { Shield, Mail, Lock, Phone, User as UserIcon, ArrowRight, UserCheck, AlertCircle, Loader2 } from 'lucide-react';
 
 export const LoginPage: React.FC = () => {
-  const { loginWithGoogle, loginWithEmail, registerWithEmail, loginAsCitizen } = useAuth();
+  const { loginWithGoogle, loginWithEmail, registerWithEmail } = useAuth();
   const { t, language } = useLanguage();
   const { showToast } = useNotifications();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [authMode, setAuthMode] = useState<'signin' | 'register' | 'quick'>('signin');
+  const [authMode, setAuthMode] = useState<'signin' | 'register'>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
@@ -28,7 +28,7 @@ export const LoginPage: React.FC = () => {
     setIsLoadingGoogle(true);
     setErrorMessage(null);
     try {
-      const loggedUser = await loginWithGoogle('citizen');
+      const loggedUser = await loginWithGoogle();
       showToast(
         'success',
         'Google Authentication Successful',
@@ -41,7 +41,7 @@ export const LoginPage: React.FC = () => {
         setErrorMessage('Sign-in cancelled. Please click the button to try again.');
       } else {
         setErrorMessage(
-          err?.message || 'Failed to authenticate with Google. Please try again or use direct Citizen login.'
+          err?.message || 'Failed to authenticate with Google. Please try again with email and password.'
         );
       }
     } finally {
@@ -82,30 +82,8 @@ export const LoginPage: React.FC = () => {
       } else if (err?.code === 'auth/weak-password') {
         setErrorMessage('Password must be at least 6 characters long.');
       } else {
-        // If Firebase Auth fails due to offline/mock fallback, allow graceful sign-in as citizen
-        try {
-          const fallbackUser = await loginAsCitizen(email, fullName || email.split('@')[0]);
-          showToast('success', 'Citizen Access Granted', `Signed in as ${fallbackUser.name}`);
-          navigate(redirectPath);
-          return;
-        } catch {
-          setErrorMessage(err?.message || 'Authentication failed.');
-        }
+        setErrorMessage(err?.message || 'Authentication failed.');
       }
-    } finally {
-      setIsLoadingSubmit(false);
-    }
-  };
-
-  const handleOneClickCitizen = async () => {
-    setIsLoadingSubmit(true);
-    setErrorMessage(null);
-    try {
-      const loggedUser = await loginAsCitizen('+91 98200 12345', 'Verified Citizen');
-      showToast('success', 'Citizen Access Active', 'Signed in as verified resident.');
-      navigate(redirectPath);
-    } catch (err: any) {
-      setErrorMessage(err?.message || 'Quick login failed.');
     } finally {
       setIsLoadingSubmit(false);
     }
@@ -306,19 +284,6 @@ export const LoginPage: React.FC = () => {
             </span>
           </button>
         </form>
-
-        {/* Instant Citizen Login */}
-        <div className="pt-2 border-t border-slate-100">
-          <button
-            type="button"
-            id="quick-login-btn"
-            onClick={handleOneClickCitizen}
-            disabled={isLoadingSubmit || isLoadingGoogle}
-            className="w-full py-2 px-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-medium flex items-center justify-center gap-2 cursor-pointer transition-colors"
-          >
-            <span>⚡ Instant Verified Resident Login (1-Click)</span>
-          </button>
-        </div>
 
         {/* Administrative Portal Link */}
         <div className="pt-4 border-t border-slate-100 text-center">

@@ -19,7 +19,7 @@
     },
     "Problem": {
       "title": "Problem",
-      "description": "Citizen logged civic grievance and resolution docket",
+      "description": "Citizen logged civic grievance and resolution docket with private evidence and officer notes",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
@@ -42,6 +42,30 @@
         "reporterUid": { "type": "string" },
         "reporterName": { "type": "string" },
         "reporterEmail": { "type": "string" },
+        "citizenPhone": { "type": "string" },
+        "citizenPhoneMasked": { "type": "string" },
+        "internalNotes": { "type": "array" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "description", "category", "status", "createdAt"]
+    },
+    "PublicProblem": {
+      "title": "PublicProblem",
+      "description": "Sanitized civic problem for public transparency and docket tracking without private citizen PII",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "department": { "type": "string" },
+        "location": { "type": "object" },
+        "priority": { "type": "string" },
+        "status": { "type": "string" },
+        "deadline": { "type": "string" },
+        "timeline": { "type": "array" },
+        "resolutionEvidence": { "type": "object" },
         "createdAt": { "type": "string" },
         "updatedAt": { "type": "string" }
       },
@@ -103,7 +127,11 @@
     },
     "/problems/{problemId}": {
       "schema": "Problem",
-      "description": "Civic grievances collection"
+      "description": "Private civic grievances collection"
+    },
+    "/public_problems/{problemId}": {
+      "schema": "PublicProblem",
+      "description": "Sanitized public transparency grievances collection"
     },
     "/innovations/{innovationId}": {
       "schema": "Innovation",

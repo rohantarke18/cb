@@ -4,45 +4,106 @@ import {
   auth,
   db,
   signInWithGoogle,
-  signInCitizenQuick,
   logoutFirebase,
   testFirestoreConnection,
   cleanFirestoreData,
 } from '../lib/firebase';
-import { onAuthStateChanged, User as FirebaseUser, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import {
+  onAuthStateChanged,
+  User as FirebaseUser,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+} from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
+
+const SUPER_ADMIN_EMAILS = [
+  'rohantarke07@gmail.com',
+  'admin@civicbridge.gov.in',
+];
 
 interface AuthContextType {
   user: User | null;
   role: UserRole;
   isAuthenticated: boolean;
   isAdminOrOfficer: boolean;
+  isSuperAdmin: boolean;
+  isDeptAdmin: boolean;
+  isOfficer: boolean;
   isExpert: boolean;
   loading: boolean;
-  loginWithGoogle: (targetRole?: UserRole) => Promise<User>;
+  loginWithGoogle: () => Promise<User>;
   loginWithEmail: (email: string, pass: string) => Promise<User>;
   registerWithEmail: (email: string, pass: string, name: string, phone?: string) => Promise<User>;
-  loginAsCitizen: (emailOrPhone?: string, name?: string) => Promise<User>;
-  loginWithPhone: (phone: string, otp: string) => Promise<User>;
-  loginAsOfficial: (role: UserRole, email: string, name?: string) => Promise<User>;
-  loginAdmin: (email: string, pass: string, role: UserRole) => Promise<User>;
   logout: () => Promise<void>;
-  switchRoleForDemo: (role: UserRole) => Promise<void>;
-  updateUserProfile: (updates: Partial<User>) => Promise<void>;
+  updateUserProfile: (updates: {
+    name?: string;
+    phone?: string;
+    avatar?: string;
+    wardOrDistrict?: string;
+  }) => Promise<void>;
+  provisionOfficialUser: (
+    uidOrEmail: string,
+    newRole: UserRole,
+    department?: string,
+    designation?: string
+  ) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(() => {
-    try {
-      const saved = localStorage.getItem('civicbridge_active_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
+  const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Helper to load or provision Firestore user profile
+  const syncUserProfile = async (fbUser: FirebaseUser): Promise<User> => {
+    const userRef = doc(db, 'users', fbUser.uid);
+    const snap = await getDoc(userRef);
+    const emailLower = (fbUser.email || '').toLowerCase().trim();
+    const isDesignatedSuperAdmin = SUPER_ADMIN_EMAILS.includes(emailLower);
+
+    if (snap.exists()) {
+      const data = snap.data() as User;
+      let effectiveRole: UserRole = data.role || 'citizen';
+      if (isDesignatedSuperAdmin && effectiveRole !== 'super_admin') {
+        effectiveRole = 'super_admin';
+        await updateDoc(userRef, { role: 'super_admin', updatedAt: new Date().toISOString() });
+      }
+
+      const verifiedUser: User = {
+        ...data,
+        id: fbUser.uid,
+        name: data.name || fbUser.displayName || 'Citizen User',
+        email: fbUser.email || data.email || '',
+        role: effectiveRole,
+        avatar: fbUser.photoURL || data.avatar,
+      };
+      return verifiedUser;
+    } else {
+      // First-time user profile creation: designated super admins get super_admin, all others strictly get citizen
+      const initialRole: UserRole = isDesignatedSuperAdmin ? 'super_admin' : 'citizen';
+      const newUser: User = {
+        id: fbUser.uid,
+        name: fbUser.displayName || 'Citizen User',
+        email: fbUser.email || '',
+        role: initialRole,
+        avatar: fbUser.photoURL || undefined,
+        wardOrDistrict: 'Ward 8 (CIDCO / Kranti Chowk)',
+        department: isDesignatedSuperAdmin ? 'Central Municipal Administration' : undefined,
+        designation: isDesignatedSuperAdmin ? 'Chief Administrative Officer' : undefined,
+      };
+
+      await setDoc(
+        userRef,
+        cleanFirestoreData({
+          ...newUser,
+          createdAt: new Date().toISOString(),
+        }),
+        { merge: true }
+      );
+      return newUser;
+    }
+  };
 
   // Initialize and listen to real Firebase Auth state
   useEffect(() => {
@@ -50,60 +111,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const unsubscribe = onAuthStateChanged(auth, async (fbUser: FirebaseUser | null) => {
       if (!fbUser) {
-        // Only clear if not in persistent local session
-        const saved = localStorage.getItem('civicbridge_active_user');
-        if (!saved) {
-          setUser(null);
-        }
+        setUser(null);
         setLoading(false);
         return;
       }
 
       try {
-        const userRef = doc(db, 'users', fbUser.uid);
-        const userSnap = await getDoc(userRef);
-
-        if (userSnap.exists()) {
-          const data = userSnap.data() as User;
-          const updatedUser: User = {
-            ...data,
-            id: fbUser.uid,
-            name: fbUser.displayName || data.name || 'Citizen User',
-            email: fbUser.email || data.email || '',
-            avatar: fbUser.photoURL || data.avatar,
-          };
-          setUser(updatedUser);
-          localStorage.setItem('civicbridge_active_user', JSON.stringify(updatedUser));
-        } else {
-          // Create initial user doc
-          const newUser: User = {
-            id: fbUser.uid,
-            name: fbUser.displayName || 'Citizen User',
-            email: fbUser.email || '',
-            role: 'citizen',
-            avatar: fbUser.photoURL || undefined,
-            wardOrDistrict: 'Ward 8 (CIDCO / Kranti Chowk)',
-          };
-          await setDoc(userRef, cleanFirestoreData({
-            ...newUser,
-            createdAt: new Date().toISOString(),
-          }), { merge: true });
-          setUser(newUser);
-          localStorage.setItem('civicbridge_active_user', JSON.stringify(newUser));
-        }
+        const verifiedUser = await syncUserProfile(fbUser);
+        setUser(verifiedUser);
       } catch (err) {
-        console.error('Error fetching user profile from Firestore:', err);
-        // Fallback in-memory user
-        const fallback: User = {
+        console.error('Error synchronizing user profile with Firestore:', err);
+        // Fallback minimal authenticated user
+        setUser({
           id: fbUser.uid,
           name: fbUser.displayName || 'Citizen User',
           email: fbUser.email || '',
-          role: 'citizen',
+          role: SUPER_ADMIN_EMAILS.includes((fbUser.email || '').toLowerCase()) ? 'super_admin' : 'citizen',
           avatar: fbUser.photoURL || undefined,
-          wardOrDistrict: 'Ward 8 (CIDCO / Kranti Chowk)',
-        };
-        setUser(fallback);
-        localStorage.setItem('civicbridge_active_user', JSON.stringify(fallback));
+        });
       } finally {
         setLoading(false);
       }
@@ -112,58 +137,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
-  const loginWithGoogle = async (targetRole: UserRole = 'citizen'): Promise<User> => {
+  const loginWithGoogle = async (): Promise<User> => {
     const fbUser = await signInWithGoogle();
-    const userRef = doc(db, 'users', fbUser.uid);
-    const userSnap = await getDoc(userRef);
-
-    let assignedRole: UserRole = targetRole;
-    if (userSnap.exists()) {
-      const existing = userSnap.data() as User;
-      if (targetRole === 'citizen' && existing.role) {
-        assignedRole = existing.role;
-      }
-    }
-
-    const userData: User = {
-      id: fbUser.uid,
-      name: fbUser.displayName || 'Citizen User',
-      email: fbUser.email || '',
-      role: assignedRole,
-      avatar: fbUser.photoURL || undefined,
-      department:
-        assignedRole === 'officer'
-          ? 'Municipal Road Maintenance & Civil Infrastructure'
-          : assignedRole === 'department_admin'
-          ? 'Sanitation & Solid Waste Management'
-          : assignedRole === 'expert'
-          ? 'Urban Planning & Mobility Institute'
-          : undefined,
-      designation:
-        assignedRole === 'officer'
-          ? 'Field Executive Engineer'
-          : assignedRole === 'department_admin'
-          ? 'Additional Municipal Commissioner'
-          : assignedRole === 'super_admin'
-          ? 'Chief Administrative Officer'
-          : assignedRole === 'expert'
-          ? 'Civic Innovation Advisory Committee Member'
-          : undefined,
-      wardOrDistrict: 'Ward 8 (CIDCO / Kranti Chowk)',
-    };
-
-    try {
-      await setDoc(userRef, cleanFirestoreData({
-        ...userData,
-        updatedAt: new Date().toISOString(),
-      }), { merge: true });
-    } catch (e) {
-      console.warn('Firestore setDoc user warning:', e);
-    }
-
-    setUser(userData);
-    localStorage.setItem('civicbridge_active_user', JSON.stringify(userData));
-    return userData;
+    const verifiedUser = await syncUserProfile(fbUser);
+    setUser(verifiedUser);
+    return verifiedUser;
   };
 
   const registerWithEmail = async (
@@ -175,230 +153,113 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const cred = await createUserWithEmailAndPassword(auth, email.trim(), pass);
     const fbUser = cred.user;
     const cleanName = name.trim() || 'Citizen User';
+    const emailLower = email.trim().toLowerCase();
+    const isSuper = SUPER_ADMIN_EMAILS.includes(emailLower);
+
+    // Registration ALWAYS creates a citizen (unless predefined super admin bootstrap)
+    const initialRole: UserRole = isSuper ? 'super_admin' : 'citizen';
 
     const userData: User = {
       id: fbUser.uid,
       name: cleanName,
       email: fbUser.email || email.trim(),
-      phone: phone || '+91 98200 00000',
-      role: 'citizen',
+      phone: phone || '',
+      role: initialRole,
       wardOrDistrict: 'Ward 8 (CIDCO / Kranti Chowk)',
+      department: isSuper ? 'Central Municipal Administration' : undefined,
+      designation: isSuper ? 'Chief Administrative Officer' : undefined,
     };
 
-    try {
-      const userRef = doc(db, 'users', fbUser.uid);
-      await setDoc(
-        userRef,
-        cleanFirestoreData({
-          ...userData,
-          createdAt: new Date().toISOString(),
-        }),
-        { merge: true }
-      );
-    } catch (e) {
-      console.warn('Firestore user profile creation notice:', e);
-    }
+    const userRef = doc(db, 'users', fbUser.uid);
+    await setDoc(
+      userRef,
+      cleanFirestoreData({
+        ...userData,
+        createdAt: new Date().toISOString(),
+      }),
+      { merge: true }
+    );
 
     setUser(userData);
-    localStorage.setItem('civicbridge_active_user', JSON.stringify(userData));
     return userData;
   };
 
   const loginWithEmail = async (email: string, pass: string): Promise<User> => {
     const cred = await signInWithEmailAndPassword(auth, email.trim(), pass);
-    const fbUser = cred.user;
-
-    let roleToAssign: UserRole = 'citizen';
-    let existingProfile: Partial<User> = {};
-
-    try {
-      const userRef = doc(db, 'users', fbUser.uid);
-      const snap = await getDoc(userRef);
-      if (snap.exists()) {
-        existingProfile = snap.data() as User;
-        if (existingProfile.role) {
-          roleToAssign = existingProfile.role;
-        }
-      }
-    } catch (e) {
-      console.warn('Could not read existing profile from Firestore:', e);
-    }
-
-    const userData: User = {
-      id: fbUser.uid,
-      name: fbUser.displayName || existingProfile.name || 'Citizen User',
-      email: fbUser.email || email.trim(),
-      role: roleToAssign,
-      phone: existingProfile.phone || '+91 98200 00000',
-      wardOrDistrict: existingProfile.wardOrDistrict || 'Ward 8 (CIDCO / Kranti Chowk)',
-      department: existingProfile.department,
-      designation: existingProfile.designation,
-      avatar: fbUser.photoURL || existingProfile.avatar,
-    };
-
-    setUser(userData);
-    localStorage.setItem('civicbridge_active_user', JSON.stringify(userData));
-    return userData;
-  };
-
-  const loginAsCitizen = async (emailOrPhone?: string, name?: string): Promise<User> => {
-    const cleanName = name?.trim() || 'Citizen User';
-    const fbUser = await signInCitizenQuick(cleanName, emailOrPhone);
-
-    const userData: User = {
-      id: fbUser.uid,
-      name: cleanName,
-      email: emailOrPhone && emailOrPhone.includes('@') ? emailOrPhone : (fbUser.email || ''),
-      phone: emailOrPhone && !emailOrPhone.includes('@') ? emailOrPhone : '+91 98200 00000',
-      role: 'citizen',
-      wardOrDistrict: 'Ward 8 (CIDCO / Kranti Chowk)',
-    };
-
-    try {
-      const userRef = doc(db, 'users', fbUser.uid);
-      await setDoc(userRef, cleanFirestoreData({
-        ...userData,
-        createdAt: new Date().toISOString(),
-      }), { merge: true });
-    } catch (e) {
-      console.warn('Firestore setDoc warning:', e);
-    }
-
-    setUser(userData);
-    localStorage.setItem('civicbridge_active_user', JSON.stringify(userData));
-    return userData;
-  };
-
-  const loginWithPhone = async (phone: string, _otp: string): Promise<User> => {
-    return loginAsCitizen(phone, 'Verified Citizen');
-  };
-
-  const loginAsOfficial = async (role: UserRole, email: string, name?: string): Promise<User> => {
-    const officialName = name || (
-      role === 'officer'
-        ? 'Field Engineer'
-        : role === 'department_admin'
-        ? 'Municipal Commissioner'
-        : role === 'expert'
-        ? 'Civic Innovation Advisor'
-        : 'Chief Administrator'
-    );
-
-    const fbUser = await signInCitizenQuick(officialName, email);
-    const userData: User = {
-      id: fbUser.uid,
-      name: officialName,
-      email: email,
-      role: role,
-      department:
-        role === 'officer'
-          ? 'Municipal Road Maintenance & Civil Infrastructure'
-          : role === 'department_admin'
-          ? 'Sanitation & Solid Waste Management'
-          : role === 'expert'
-          ? 'Urban Planning & Mobility Institute'
-          : 'Central Municipal Administration',
-      designation:
-        role === 'officer'
-          ? 'Executive Ward Engineer'
-          : role === 'department_admin'
-          ? 'Additional Municipal Commissioner'
-          : role === 'expert'
-          ? 'Advisory Panel Member'
-          : 'Chief Administrative Officer',
-      wardOrDistrict: 'Ward 8 (CIDCO / Kranti Chowk)',
-    };
-
-    try {
-      const userRef = doc(db, 'users', fbUser.uid);
-      await setDoc(userRef, cleanFirestoreData({
-        ...userData,
-        updatedAt: new Date().toISOString(),
-      }), { merge: true });
-    } catch (e) {
-      console.warn('Firestore setDoc warning:', e);
-    }
-
-    setUser(userData);
-    localStorage.setItem('civicbridge_active_user', JSON.stringify(userData));
-    return userData;
-  };
-
-  const loginAdmin = async (email: string, _pass: string, roleToUse: UserRole): Promise<User> => {
-    return loginAsOfficial(roleToUse, email);
+    const verifiedUser = await syncUserProfile(cred.user);
+    setUser(verifiedUser);
+    return verifiedUser;
   };
 
   const logout = async () => {
     try {
       await logoutFirebase();
     } catch (e) {
-      console.warn('Logout note:', e);
+      console.warn('Logout notice:', e);
     }
-    localStorage.removeItem('civicbridge_active_user');
     setUser(null);
   };
 
-  const switchRoleForDemo = async (newRole: UserRole) => {
-    if (!user) {
-      await loginAsOfficial(newRole, `${newRole}@civicbridge.gov.in`);
-      return;
-    }
-
-    const updated: User = {
-      ...user,
-      role: newRole,
-      department:
-        newRole === 'officer'
-          ? 'Municipal Road Maintenance & Civil Infrastructure'
-          : newRole === 'department_admin'
-          ? 'Sanitation & Solid Waste Management'
-          : newRole === 'expert'
-          ? 'Urban Planning & Mobility Institute'
-          : user.department,
-      designation:
-        newRole === 'officer'
-          ? 'Executive Ward Engineer'
-          : newRole === 'department_admin'
-          ? 'Additional Municipal Commissioner'
-          : newRole === 'expert'
-          ? 'Advisory Panel Member'
-          : user.designation,
+  /**
+   * Safe profile update: users can only modify personal information, NEVER their role or department
+   */
+  const updateUserProfile = async (updates: {
+    name?: string;
+    phone?: string;
+    avatar?: string;
+    wardOrDistrict?: string;
+  }) => {
+    if (!user) return;
+    const sanitized = {
+      ...(updates.name ? { name: updates.name.trim() } : {}),
+      ...(updates.phone !== undefined ? { phone: updates.phone.trim() } : {}),
+      ...(updates.avatar ? { avatar: updates.avatar } : {}),
+      ...(updates.wardOrDistrict ? { wardOrDistrict: updates.wardOrDistrict } : {}),
+      updatedAt: new Date().toISOString(),
     };
 
+    const updated = { ...user, ...sanitized };
     setUser(updated);
 
     try {
       const userRef = doc(db, 'users', user.id);
-      await updateDoc(userRef, {
-        role: newRole,
-        department: updated.department || null,
-        designation: updated.designation || null,
-      });
-    } catch (e) {
-      console.warn('Could not update role in Firestore:', e);
-    }
-  };
-
-  const updateUserProfile = async (updates: Partial<User>) => {
-    if (!user) return;
-    const updated = { ...user, ...updates };
-    setUser(updated);
-    try {
-      const userRef = doc(db, 'users', user.id);
-      await updateDoc(userRef, updates);
+      await updateDoc(userRef, cleanFirestoreData(sanitized));
     } catch (e) {
       console.warn('Error updating user profile in Firestore:', e);
     }
   };
 
+  /**
+   * Secure official provisioning: only administrators can invoke this to update role/department in Firestore
+   */
+  const provisionOfficialUser = async (
+    targetUid: string,
+    newRole: UserRole,
+    department?: string,
+    designation?: string
+  ) => {
+    if (!user || (user.role !== 'super_admin' && user.role !== 'department_admin')) {
+      throw new Error('Unauthorized: Only administrators can provision official roles.');
+    }
+
+    const updates: Record<string, any> = {
+      role: newRole,
+      department: department || '',
+      designation: designation || '',
+      updatedAt: new Date().toISOString(),
+    };
+
+    const targetRef = doc(db, 'users', targetUid);
+    await updateDoc(targetRef, cleanFirestoreData(updates));
+  };
+
   const role = user?.role || 'citizen';
   const isAuthenticated = !!user;
-  const isAdminOrOfficer =
-    role === 'officer' ||
-    role === 'department_admin' ||
-    role === 'super_admin' ||
-    role === 'expert';
-  const isExpert = role === 'expert' || role === 'super_admin';
+  const isSuperAdmin = role === 'super_admin';
+  const isDeptAdmin = role === 'department_admin' || isSuperAdmin;
+  const isOfficer = role === 'officer' || isDeptAdmin;
+  const isExpert = role === 'expert' || isSuperAdmin;
+  const isAdminOrOfficer = isOfficer || isExpert;
 
   return (
     <AuthContext.Provider
@@ -407,18 +268,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role,
         isAuthenticated,
         isAdminOrOfficer,
+        isSuperAdmin,
+        isDeptAdmin,
+        isOfficer,
         isExpert,
         loading,
         loginWithGoogle,
         loginWithEmail,
         registerWithEmail,
-        loginAsCitizen,
-        loginWithPhone,
-        loginAsOfficial,
-        loginAdmin,
         logout,
-        switchRoleForDemo,
         updateUserProfile,
+        provisionOfficialUser,
       }}
     >
       {children}

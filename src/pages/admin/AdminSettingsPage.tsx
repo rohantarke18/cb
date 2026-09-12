@@ -1,7 +1,48 @@
-import React from 'react';
-import { Settings, Shield, Bell, Lock, Globe, Clock } from 'lucide-react';
+import React, { useState } from 'react';
+import { Settings, Shield, Bell, Lock, Globe, Clock, UserCheck, AlertCircle, CheckCircle2, Loader2, UserPlus } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import { useNotifications } from '../../context/NotificationContext';
+import { UserRole } from '../../types';
 
 export const AdminSettingsPage: React.FC = () => {
+  const { user, isSuperAdmin, isDeptAdmin, provisionOfficialUser } = useAuth();
+  const { showToast } = useNotifications();
+
+  // Officer Provisioning State
+  const [targetUid, setTargetUid] = useState('');
+  const [assignedRole, setAssignedRole] = useState<UserRole>('officer');
+  const [department, setDepartment] = useState('Municipal Road Maintenance & Civil Infrastructure');
+  const [designation, setDesignation] = useState('Field Executive Engineer');
+  const [isProvisioning, setIsProvisioning] = useState(false);
+  const [provisionSuccess, setProvisionSuccess] = useState<string | null>(null);
+  const [provisionError, setProvisionError] = useState<string | null>(null);
+
+  const handleProvisionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setProvisionError(null);
+    setProvisionSuccess(null);
+
+    if (!targetUid.trim()) {
+      setProvisionError('Please enter the user UID or registered email to provision.');
+      return;
+    }
+
+    setIsProvisioning(true);
+    try {
+      await provisionOfficialUser(targetUid.trim(), assignedRole, department, designation);
+      setProvisionSuccess(
+        `User ${targetUid} successfully provisioned as ${assignedRole.toUpperCase()} in ${department}.`
+      );
+      showToast('success', 'Role Provisioned', `Official privileges updated for ${targetUid}`);
+      setTargetUid('');
+    } catch (err: any) {
+      console.error('Provisioning error:', err);
+      setProvisionError(err.message || 'Failed to provision user role. Ensure you have administrator rights.');
+    } finally {
+      setIsProvisioning(false);
+    }
+  };
+
   return (
     <div className="max-w-4xl space-y-6">
       <div>
@@ -9,10 +50,144 @@ export const AdminSettingsPage: React.FC = () => {
           Administrative & System Settings
         </h1>
         <p className="text-xs text-slate-500 mt-0.5">
-          Configure SLA thresholds, automated triage rules, and role permissions.
+          Configure SLA thresholds, automated triage rules, and municipal official role provisioning.
         </p>
       </div>
 
+      {/* Official Role Provisioning Module (Administrators Only) */}
+      {(isSuperAdmin || isDeptAdmin) && (
+        <div className="bg-white rounded-xl border border-amber-200 p-6 shadow-xs space-y-5">
+          <div className="pb-3 border-b border-amber-100 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-800 flex items-center justify-center">
+                <UserPlus className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">
+                  Municipal Official Role Provisioning
+                </h2>
+                <p className="text-[11px] text-slate-500">
+                  Security Rule: Normal registrations always create Citizens. Privileged roles must be provisioned here by an Administrator.
+                </p>
+              </div>
+            </div>
+            <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
+              Admin Exclusive
+            </span>
+          </div>
+
+          {provisionSuccess && (
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-xs text-emerald-800 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{provisionSuccess}</span>
+            </div>
+          )}
+
+          {provisionError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-xs text-rose-800 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              <span>{provisionError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleProvisionSubmit} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">
+                  User Firebase UID or Account Identifier
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={targetUid}
+                  onChange={(e) => setTargetUid(e.target.value)}
+                  placeholder="e.g. 8u2N... or user UID"
+                  className="w-full p-2.5 border border-slate-300 rounded-lg bg-slate-50 focus:bg-white focus:outline-blue-600 font-mono text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">
+                  Privileged Role Assignment
+                </label>
+                <select
+                  value={assignedRole}
+                  onChange={(e) => {
+                    const r = e.target.value as UserRole;
+                    setAssignedRole(r);
+                    if (r === 'officer') {
+                      setDesignation('Field Executive Engineer');
+                    } else if (r === 'department_admin') {
+                      setDesignation('Additional Municipal Commissioner / Supervisor');
+                    } else if (r === 'expert') {
+                      setDesignation('Civic Innovation Advisory Committee Member');
+                    }
+                  }}
+                  className="w-full p-2.5 border border-slate-300 rounded-lg bg-slate-50 focus:bg-white focus:outline-blue-600 font-semibold"
+                >
+                  <option value="officer">Field Officer (Ground Resolution & Photo Verification)</option>
+                  <option value="department_admin">Department Admin / Supervisor (Triage & Assignment)</option>
+                  <option value="expert">Innovation Expert Evaluator (Feasibility & Pilot Scoring)</option>
+                  {isSuperAdmin && (
+                    <option value="super_admin">Super Administrator (Full System Authority)</option>
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">
+                  Assigned Municipal Department
+                </label>
+                <select
+                  value={department}
+                  onChange={(e) => setDepartment(e.target.value)}
+                  className="w-full p-2.5 border border-slate-300 rounded-lg bg-slate-50 focus:bg-white focus:outline-blue-600"
+                >
+                  <option value="Municipal Road Maintenance & Civil Infrastructure">Municipal Road Maintenance & Civil Infrastructure</option>
+                  <option value="Water Supply, Sewerage & Stormwater Drainage Board">Water Supply, Sewerage & Stormwater Drainage Board</option>
+                  <option value="Sanitation & Solid Waste Management Department">Sanitation & Solid Waste Management Department</option>
+                  <option value="Electrical Engineering & Street Lighting Division">Electrical Engineering & Street Lighting Division</option>
+                  <option value="Public Health & Vector Control Department">Public Health & Vector Control Department</option>
+                  <option value="Parks, Gardens & Urban Forestry Department">Parks, Gardens & Urban Forestry Department</option>
+                  <option value="City Transport & Traffic Governance Cell">City Transport & Traffic Governance Cell</option>
+                  <option value="Central Municipal Administration">Central Municipal Administration</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-slate-700 font-semibold mb-1">
+                  Official Designation / Title
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={designation}
+                  onChange={(e) => setDesignation(e.target.value)}
+                  placeholder="e.g. Ward Executive Engineer"
+                  className="w-full p-2.5 border border-slate-300 rounded-lg bg-slate-50 focus:bg-white focus:outline-blue-600 text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="submit"
+                disabled={isProvisioning}
+                className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold transition-colors cursor-pointer flex items-center gap-2 shadow-xs disabled:opacity-50"
+              >
+                {isProvisioning ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <UserCheck className="w-3.5 h-3.5" />
+                )}
+                <span>Provision Official Role</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* SLA & General Settings */}
       <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs space-y-6">
         <div>
           <h2 className="text-sm font-bold text-slate-900 pb-2 border-b border-slate-100 flex items-center gap-2">

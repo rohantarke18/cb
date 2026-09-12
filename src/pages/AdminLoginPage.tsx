@@ -1,110 +1,95 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { useLanguage } from '../context/LanguageContext';
 import { useNotifications } from '../context/NotificationContext';
-import { UserRole } from '../types';
 import {
   Shield,
+  Lock,
+  Mail,
   Building2,
-  HardHat,
-  ChevronRight,
-  UserCheck,
   AlertCircle,
   Loader2,
-  Mail,
   ArrowRight,
-  Sparkles,
+  ShieldCheck,
+  CheckCircle2,
 } from 'lucide-react';
 
 export const AdminLoginPage: React.FC = () => {
-  const { loginWithGoogle, loginAsOfficial } = useAuth();
+  const { loginWithGoogle, loginWithEmail } = useAuth();
   const { showToast } = useNotifications();
   const navigate = useNavigate();
 
-  // ONLY TWO ROLES:
-  // 1. Boss (Supervisor / Manager who assigns tasks & tracks work)
-  // 2. On-Site Worker (Field engineer / technician who works on site & submits photo proof)
-  const [selectedAdminType, setSelectedAdminType] = useState<'boss' | 'worker'>('boss');
-
-  const [isLoading, setIsLoading] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isLoadingSubmit, setIsLoadingSubmit] = useState(false);
   const [isLoadingGoogle, setIsLoadingGoogle] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const adminProfiles = {
-    boss: {
-      role: 'department_admin' as UserRole,
-      title: 'Supervisor (Boss)',
-      tag: 'Task Dispatcher & Tracker',
-      summary: 'Assigns tasks to on-site workers, sets deadlines & monitors work progress.',
-      name: 'Er. Rajesh Patil',
-      email: 'supervisor.patil@civicbridge.gov.in',
-      department: 'Central Municipal Ward Operations',
-      icon: Building2,
-      accentBorder: 'border-amber-500 bg-amber-500/10 text-amber-400',
-      badgeClass: 'bg-amber-400 text-slate-950',
-    },
-    worker: {
-      role: 'officer' as UserRole,
-      title: 'On-Site Worker',
-      tag: 'Ground Field Crew',
-      summary: 'Fixes issues on site, completes repairs & uploads photographic proof.',
-      name: 'Milind Salvi',
-      email: 'worker.salvi@civicbridge.gov.in',
-      department: 'Municipal Road & Civil Repair Crew',
-      icon: HardHat,
-      accentBorder: 'border-sky-400 bg-sky-500/10 text-sky-400',
-      badgeClass: 'bg-sky-400 text-slate-950',
-    },
+  const checkPrivilegesAndRedirect = (user: any) => {
+    const privilegedRoles = ['super_admin', 'department_admin', 'officer', 'expert'];
+    if (!privilegedRoles.includes(user.role)) {
+      setErrorMessage(
+        `Access Denied: "${user.email || user.name}" is registered as a Citizen. The Municipal Administrative Portal requires an authorized Officer, Department Administrator, or Super Admin account.`
+      );
+      return false;
+    }
+
+    showToast(
+      'success',
+      'Official Access Authorized',
+      `Welcome, ${user.name} (${user.designation || user.role})`
+    );
+
+    if (user.role === 'officer') {
+      navigate('/admin/assignments');
+    } else {
+      navigate('/admin');
+    }
+    return true;
   };
 
-  const currentProfile = adminProfiles[selectedAdminType];
-
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsLoading(true);
     setErrorMessage(null);
 
+    if (!email.trim() || !password.trim()) {
+      setErrorMessage('Please enter both municipal email address and security password.');
+      return;
+    }
+
+    setIsLoadingSubmit(true);
     try {
-      const user = await loginAsOfficial(
-        currentProfile.role,
-        currentProfile.email,
-        currentProfile.name
-      );
-      showToast(
-        'success',
-        `Welcome, ${user.name}`,
-        selectedAdminType === 'boss'
-          ? 'Signed in as Municipal Supervisor (Task Manager).'
-          : 'Signed in as On-Site Field Worker.'
-      );
-      navigate(selectedAdminType === 'boss' ? '/admin' : '/admin/assignments');
+      const authenticatedUser = await loginWithEmail(email, password);
+      checkPrivilegesAndRedirect(authenticatedUser);
     } catch (err: any) {
-      console.error('Official login error:', err);
-      setErrorMessage(err?.message || 'Login failed.');
+      console.error('Official Email Auth error:', err);
+      if (
+        err?.code === 'auth/user-not-found' ||
+        err?.code === 'auth/wrong-password' ||
+        err?.code === 'auth/invalid-credential'
+      ) {
+        setErrorMessage('Invalid official email or password. Please verify credentials with your department administrator.');
+      } else {
+        setErrorMessage(err?.message || 'Authentication failed. Please verify credentials.');
+      }
     } finally {
-      setIsLoading(false);
+      setIsLoadingSubmit(false);
     }
   };
 
-  const handleGoogleAdminSignIn = async () => {
+  const handleGoogleSignIn = async () => {
     setIsLoadingGoogle(true);
     setErrorMessage(null);
 
     try {
-      const user = await loginWithGoogle(currentProfile.role);
-      showToast(
-        'success',
-        'Official Account Verified',
-        `Authorized as ${user.name} (${selectedAdminType === 'boss' ? 'Supervisor' : 'On-Site Worker'})`
-      );
-      navigate(selectedAdminType === 'boss' ? '/admin' : '/admin/assignments');
+      const authenticatedUser = await loginWithGoogle();
+      checkPrivilegesAndRedirect(authenticatedUser);
     } catch (err: any) {
-      console.error('Google Admin Sign-in error:', err);
+      console.error('Google Official Login Error:', err);
       if (err?.code === 'auth/popup-closed-by-user') {
-        setErrorMessage('Sign-in cancelled.');
+        setErrorMessage('Sign-in cancelled. Please try again.');
       } else {
-        setErrorMessage(err?.message || 'Failed to authenticate.');
+        setErrorMessage(err?.message || 'Failed to authenticate with Google.');
       }
     } finally {
       setIsLoadingGoogle(false);
@@ -115,14 +100,18 @@ export const AdminLoginPage: React.FC = () => {
     <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-slate-100 flex flex-col justify-center py-10 px-4 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center space-y-2">
-        <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-amber-500 to-amber-400 text-slate-950 flex items-center justify-center font-black text-xl mx-auto shadow-lg shadow-amber-500/20 font-serif">
+        <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-amber-500 to-amber-400 text-slate-950 flex items-center justify-center font-black text-2xl mx-auto shadow-lg shadow-amber-500/20 font-serif">
           CB
         </div>
-        <h1 className="text-2xl font-extrabold tracking-tight text-white">
-          CivicBridge Portal
+        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs font-semibold">
+          <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+          <span>Restricted Municipal Administrative Desk</span>
+        </div>
+        <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
+          Government & Officer Portal
         </h1>
-        <p className="text-xs text-amber-400 font-semibold tracking-wide">
-          Choose your role to continue
+        <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
+          Authorized access point for Field Officers, Department Engineers, Supervisors, and Central Municipal Administrators.
         </p>
       </div>
 
@@ -130,151 +119,25 @@ export const AdminLoginPage: React.FC = () => {
       <div className="mt-6 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="bg-slate-900/90 backdrop-blur-md border border-slate-800/90 py-7 px-5 sm:px-8 shadow-2xl rounded-2xl space-y-5">
           {errorMessage && (
-            <div className="p-3 bg-rose-950/60 border border-rose-800/80 rounded-xl text-xs text-rose-300 flex items-start gap-2.5">
+            <div className="p-3.5 bg-rose-950/70 border border-rose-800/90 rounded-xl text-xs text-rose-200 flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-              <span>{errorMessage}</span>
+              <span className="leading-relaxed">{errorMessage}</span>
             </div>
           )}
 
-          {/* Simple 2-Role Selection (Boss vs On-Site Worker) */}
-          <div className="space-y-2.5">
-            <span className="block text-xs font-bold text-slate-300">
-              Select who you are:
-            </span>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              {/* Card 1: The Boss */}
-              <button
-                type="button"
-                onClick={() => setSelectedAdminType('boss')}
-                className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2 relative ${
-                  selectedAdminType === 'boss'
-                    ? 'border-amber-500 bg-amber-500/10 ring-2 ring-amber-500/40 shadow-lg shadow-amber-500/5'
-                    : 'border-slate-800 bg-slate-800/40 hover:bg-slate-800/80 text-slate-400'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <div
-                    className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                      selectedAdminType === 'boss'
-                        ? 'bg-amber-500 text-slate-950 font-bold'
-                        : 'bg-slate-800 text-slate-400'
-                    }`}
-                  >
-                    <Building2 className="w-4 h-4" />
-                  </div>
-                  {selectedAdminType === 'boss' && (
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-slate-950">
-                      Active
-                    </span>
-                  )}
-                </div>
-
-                <div>
-                  <h3 className="font-bold text-sm text-white flex items-center gap-1">
-                    <span>Supervisor</span>
-                    <span className="text-amber-400 text-xs font-semibold">(The Boss)</span>
-                  </h3>
-                  <p className="text-[11px] text-slate-400 mt-1 leading-snug">
-                    Assigns tasks & tracks field work
-                  </p>
-                </div>
-              </button>
-
-              {/* Card 2: The On-Site Worker */}
-              <button
-                type="button"
-                onClick={() => setSelectedAdminType('worker')}
-                className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2 relative ${
-                  selectedAdminType === 'worker'
-                    ? 'border-sky-400 bg-sky-500/10 ring-2 ring-sky-500/40 shadow-lg shadow-sky-500/5'
-                    : 'border-slate-800 bg-slate-800/40 hover:bg-slate-800/80 text-slate-400'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <div
-                    className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                      selectedAdminType === 'worker'
-                        ? 'bg-sky-400 text-slate-950 font-bold'
-                        : 'bg-slate-800 text-slate-400'
-                    }`}
-                  >
-                    <HardHat className="w-4 h-4" />
-                  </div>
-                  {selectedAdminType === 'worker' && (
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-sky-400 text-slate-950">
-                      Active
-                    </span>
-                  )}
-                </div>
-
-                <div>
-                  <h3 className="font-bold text-sm text-white flex items-center gap-1">
-                    <span>On-Site Worker</span>
-                  </h3>
-                  <p className="text-[11px] text-slate-400 mt-1 leading-snug">
-                    Fixes issues & uploads photo proof
-                  </p>
-                </div>
-              </button>
-            </div>
-          </div>
-
-          {/* Selected Role Quick Summary Pill */}
-          <div
-            className={`p-3 rounded-xl border text-xs flex items-center justify-between ${
-              selectedAdminType === 'boss'
-                ? 'border-amber-500/30 bg-amber-500/5 text-amber-200'
-                : 'border-sky-500/30 bg-sky-500/5 text-sky-200'
-            }`}
-          >
-            <div>
-              <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider">
-                Signing in as:
-              </span>
-              <strong className="text-white text-xs block">{currentProfile.name}</strong>
-              <span className="text-[11px] text-slate-400">{currentProfile.email}</span>
-            </div>
-            <span
-              className={`text-[10px] font-bold px-2 py-1 rounded-full ${currentProfile.badgeClass}`}
-            >
-              {selectedAdminType === 'boss' ? 'Supervisor' : 'Field Crew'}
-            </span>
-          </div>
-
-          {/* Direct Sign-In CTA */}
-          <form onSubmit={handleLogin} className="space-y-3">
-            <button
-              type="submit"
-              disabled={isLoading || isLoadingGoogle}
-              className={`w-full py-3 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg disabled:opacity-50 ${
-                selectedAdminType === 'boss'
-                  ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20'
-                  : 'bg-sky-400 hover:bg-sky-300 text-slate-950 shadow-sky-500/20'
-              }`}
-            >
-              {isLoading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <UserCheck className="w-4 h-4" />
-              )}
-              <span>
-                Enter as {selectedAdminType === 'boss' ? 'Supervisor (Boss)' : 'On-Site Worker'}
-              </span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
-
-            {/* Quick Google Sign In */}
+          {/* Authorized Google SSO */}
+          <div>
             <button
               type="button"
-              onClick={handleGoogleAdminSignIn}
-              disabled={isLoading || isLoadingGoogle}
-              className="w-full py-2.5 px-3 rounded-xl border border-slate-700 bg-slate-800/70 hover:bg-slate-800 text-slate-200 font-medium text-xs flex items-center justify-center gap-2.5 transition-colors cursor-pointer disabled:opacity-50"
+              id="admin-google-signin-btn"
+              onClick={handleGoogleSignIn}
+              disabled={isLoadingGoogle || isLoadingSubmit}
+              className="w-full py-3 px-4 rounded-xl border border-slate-700 bg-slate-800/90 hover:bg-slate-800 text-white font-semibold text-xs sm:text-sm flex items-center justify-center gap-3 transition-all cursor-pointer shadow-xs hover:border-slate-600 disabled:opacity-50"
             >
               {isLoadingGoogle ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-400" />
+                <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
               ) : (
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
                   <path
                     fill="#4285F4"
                     d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
@@ -293,17 +156,93 @@ export const AdminLoginPage: React.FC = () => {
                   />
                 </svg>
               )}
-              <span>Or sign in with Google</span>
+              <span>
+                {isLoadingGoogle ? 'Authenticating Official...' : 'Sign In with Authorized Google Account'}
+              </span>
+            </button>
+          </div>
+
+          <div className="relative flex items-center justify-center">
+            <div className="border-t border-slate-800 w-full" />
+            <span className="bg-slate-900 px-3 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+              Or official credentials
+            </span>
+          </div>
+
+          {/* Email / Password Official Login Form */}
+          <form onSubmit={handleEmailLogin} className="space-y-4">
+            <div>
+              <label htmlFor="admin-email" className="block text-xs font-semibold text-slate-300 mb-1">
+                Official Email Address
+              </label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <input
+                  id="admin-email"
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="officer@civicbridge.gov.in"
+                  className="w-full pl-9 pr-3.5 py-2.5 text-xs sm:text-sm rounded-lg border border-slate-700 bg-slate-950/70 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label htmlFor="admin-password" className="block text-xs font-semibold text-slate-300 mb-1">
+                Security Password
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                <input
+                  id="admin-password"
+                  type="password"
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••••••"
+                  className="w-full pl-9 pr-3.5 py-2.5 text-xs sm:text-sm rounded-lg border border-slate-700 bg-slate-950/70 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              id="admin-submit-btn"
+              disabled={isLoadingSubmit || isLoadingGoogle}
+              className="w-full py-3 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 disabled:opacity-50 mt-3"
+            >
+              {isLoadingSubmit ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Building2 className="w-4 h-4" />
+              )}
+              <span>{isLoadingSubmit ? 'Verifying Authorization...' : 'Access Municipal Desk'}</span>
             </button>
           </form>
 
-          {/* Footer Back Link */}
-          <div className="pt-3 text-center border-t border-slate-800 text-xs">
+          {/* Security Notice */}
+          <div className="p-3 rounded-xl bg-slate-800/40 border border-slate-800 text-[11px] text-slate-400 space-y-1">
+            <div className="font-semibold text-slate-300 flex items-center gap-1.5">
+              <Shield className="w-3.5 h-3.5 text-amber-400" />
+              <span>Role-Based Access Enforcement</span>
+            </div>
+            <p className="leading-snug">
+              Official roles are strictly assigned by the municipal administrator. Self-assignment of administrative roles is prohibited.
+            </p>
+          </div>
+
+          {/* Return to Citizen Portal */}
+          <div className="pt-2 text-center border-t border-slate-800">
             <Link
               to="/login"
-              className="text-slate-400 hover:text-white transition-colors flex items-center justify-center gap-1"
+              id="back-citizen-portal-link"
+              className="text-xs text-sky-400 hover:text-sky-300 font-medium inline-flex items-center justify-center gap-1.5"
             >
-              <span>&larr; Switch to Citizen Portal</span>
+              <span>Return to Public Citizen Portal</span>
+              <ArrowRight className="w-3 h-3" />
             </Link>
           </div>
         </div>
@@ -311,5 +250,3 @@ export const AdminLoginPage: React.FC = () => {
     </div>
   );
 };
-
-export default AdminLoginPage;

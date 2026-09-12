@@ -20,7 +20,7 @@ import {
 
 export const Navbar: React.FC = () => {
   const { language, setLanguage, t } = useLanguage();
-  const { user, isAuthenticated, logout, isAdminOrOfficer, role, switchRoleForDemo } = useAuth();
+  const { user, isAuthenticated, logout, isAdminOrOfficer, role } = useAuth();
   const { unreadCount } = useNotifications();
   const location = useLocation();
   const navigate = useNavigate();
@@ -240,40 +240,6 @@ export const Navbar: React.FC = () => {
                         <Search className="w-3.5 h-3.5 text-slate-400" />
                         <span>{t.nav.trackProblem}</span>
                       </Link>
-                    </div>
-
-                    {/* Discreet Demo Persona Switcher inside dropdown */}
-                    <div className="border-t border-slate-100 pt-2 pb-1 bg-slate-50/50">
-                      <div className="px-4 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
-                        <span>{language === 'mr' ? 'भूमिका बदला (डेमो)' : language === 'hi' ? 'भूमिका बदलें (डेमो)' : 'Switch Persona (Demo)'}</span>
-                        <Shield className="w-3 h-3 text-amber-500" />
-                      </div>
-                      <div className="px-2 space-y-0.5 mt-1">
-                        {[
-                          { key: 'citizen', name: 'Aarav (Citizen)' },
-                          { key: 'department_admin', name: 'Er. Rajesh Patil (Supervisor / Boss)' },
-                          { key: 'officer', name: 'Milind Salvi (On-Site Worker)' },
-                        ].map((p) => (
-                          <button
-                            key={p.key}
-                            type="button"
-                            onClick={() => {
-                              switchRoleForDemo(p.key as any);
-                              setUserMenuOpen(false);
-                            }}
-                            className={`w-full text-left px-2 py-1.5 rounded text-[11px] flex items-center justify-between transition-colors cursor-pointer ${
-                              role === p.key
-                                ? 'bg-amber-100/80 text-amber-900 font-bold'
-                                : 'text-slate-600 hover:bg-white hover:text-slate-900'
-                            }`}
-                          >
-                            <span>{p.name}</span>
-                            {role === p.key && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-600" />
-                            )}
-                          </button>
-                        ))}
-                      </div>
                     </div>
 
                     <div className="border-t border-slate-100 pt-1">

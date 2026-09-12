@@ -17,7 +17,7 @@ import {
 
 export const AdminLayout: React.FC = () => {
   const { language, setLanguage, t } = useLanguage();
-  const { user, role, switchRoleForDemo, logout } = useAuth();
+  const { user, role, logout } = useAuth();
   const { unreadCount } = useNotifications();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
@@ -143,48 +143,14 @@ export const AdminLayout: React.FC = () => {
                     Restricted Administrative Workspace
                   </h2>
                   <p className="text-xs text-slate-600 leading-relaxed max-w-md mx-auto">
-                    This section requires authenticated municipal authority privileges (Officer, Department Administrator, Super Admin, or Advisory Expert). You are currently logged in as a <strong>Citizen</strong> ({user?.name || 'Aarav Deshmukh'}).
+                    This section requires authenticated municipal authority privileges (Field Officer, Department Administrator, Super Admin, or Advisory Expert). Your current profile is registered as a <strong>Citizen</strong> ({user?.name || user?.email || 'Authenticated Citizen'}).
                   </p>
                 </div>
 
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-left space-y-3">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block">
-                    Select an Administrative Persona to Proceed:
-                  </span>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => switchRoleForDemo('officer')}
-                      className="text-left p-3 rounded-lg border border-slate-200 bg-white hover:border-blue-500 hover:shadow-xs transition-all cursor-pointer"
-                    >
-                      <div className="text-xs font-bold text-slate-900">Sanjay Shinde</div>
-                      <div className="text-[10px] text-blue-600 font-semibold">Field Officer (Roads)</div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => switchRoleForDemo('department_admin')}
-                      className="text-left p-3 rounded-lg border border-slate-200 bg-white hover:border-blue-500 hover:shadow-xs transition-all cursor-pointer"
-                    >
-                      <div className="text-xs font-bold text-slate-900">Dr. Meera Kulkarni</div>
-                      <div className="text-[10px] text-purple-600 font-semibold">Dept Admin (Health)</div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => switchRoleForDemo('super_admin')}
-                      className="text-left p-3 rounded-lg border border-slate-200 bg-white hover:border-blue-500 hover:shadow-xs transition-all cursor-pointer"
-                    >
-                      <div className="text-xs font-bold text-slate-900">Control Officer</div>
-                      <div className="text-[10px] text-emerald-600 font-semibold">Super Admin</div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => switchRoleForDemo('expert')}
-                      className="text-left p-3 rounded-lg border border-slate-200 bg-white hover:border-blue-500 hover:shadow-xs transition-all cursor-pointer"
-                    >
-                      <div className="text-xs font-bold text-slate-900">Prof. Ananya Sen</div>
-                      <div className="text-[10px] text-amber-600 font-semibold">Advisory Committee Expert</div>
-                    </button>
-                  </div>
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-center space-y-2">
+                  <p className="text-xs text-slate-600">
+                    Official roles are assigned strictly by the Municipal Administration upon credential verification. If you are an authorized government official or field worker, please sign in with your official municipal credentials.
+                  </p>
                 </div>
 
                 <div className="flex items-center justify-center gap-3 pt-2">

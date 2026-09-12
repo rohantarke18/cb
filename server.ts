@@ -1,8 +1,9 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import firebaseConfig from './firebase-applet-config.json';
 
 dotenv.config();
 
@@ -22,6 +23,110 @@ function getGemini(): GoogleGenAI | null {
     }
   }
   return geminiClient;
+}
+
+// ==========================================
+// AUTHENTICATION & RATE LIMITING MIDDLEWARE
+// ==========================================
+const EXPECTED_PROJECT_ID = firebaseConfig.projectId;
+const EXPECTED_ISSUER = `https://securetoken.google.com/${EXPECTED_PROJECT_ID}`;
+
+// In-memory sliding-window rate limiter
+interface RateLimitEntry {
+  count: number;
+  resetAt: number;
+}
+const rateLimitMap = new Map<string, RateLimitEntry>();
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const MAX_REQUESTS_PER_WINDOW = 25;
+
+// Clean up stale rate limit entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateLimitMap.entries()) {
+    if (now > entry.resetAt) {
+      rateLimitMap.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
+
+export function parseJwtPayload(token: string): any {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const base64Url = parts[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const jsonPayload = Buffer.from(base64, 'base64').toString('utf8');
+    return JSON.parse(jsonPayload);
+  } catch {
+    return null;
+  }
+}
+
+export function requireFirebaseAuth(req: Request, res: Response, next: NextFunction): void {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({
+      error: 'Unauthorized: Authentication required to access CivicBridge AI services.',
+    });
+    return;
+  }
+
+  const token = authHeader.slice(7).trim();
+  const payload = parseJwtPayload(token);
+
+  if (!payload) {
+    res.status(401).json({
+      error: 'Unauthorized: Malformed authentication token.',
+    });
+    return;
+  }
+
+  // Verify token expiry
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (payload.exp && payload.exp < nowSec) {
+    res.status(401).json({
+      error: 'Unauthorized: Authentication token has expired.',
+    });
+    return;
+  }
+
+  // Verify token issuer and audience for project
+  if (payload.iss && payload.iss !== EXPECTED_ISSUER) {
+    res.status(401).json({
+      error: 'Unauthorized: Invalid token issuer.',
+    });
+    return;
+  }
+  if (payload.aud && payload.aud !== EXPECTED_PROJECT_ID) {
+    res.status(401).json({
+      error: 'Unauthorized: Invalid token audience.',
+    });
+    return;
+  }
+
+  const userId = payload.user_id || payload.sub || req.ip || 'unknown';
+
+  // Apply Rate Limiting
+  const now = Date.now();
+  let limitEntry = rateLimitMap.get(userId);
+  if (!limitEntry || now > limitEntry.resetAt) {
+    limitEntry = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    rateLimitMap.set(userId, limitEntry);
+  } else {
+    limitEntry.count += 1;
+    if (limitEntry.count > MAX_REQUESTS_PER_WINDOW) {
+      const retryAfterSec = Math.ceil((limitEntry.resetAt - now) / 1000);
+      res.status(429).json({
+        error: `Rate limit exceeded. Please wait ${retryAfterSec} seconds before submitting more AI requests.`,
+      });
+      return;
+    }
+  }
+
+  // Attach user to request
+  (req as any).user = payload;
+  next();
 }
 
 // Deterministic fallback rule-based classifier for 100% resilience
@@ -125,7 +230,7 @@ function deterministicCivicClassifier(title: string, description: string) {
 // ==========================================
 // 1. HEALTHCHECK
 // ==========================================
-app.get('/api/health', (req, res) => {
+app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -134,16 +239,16 @@ app.get('/api/health', (req, res) => {
 });
 
 // ==========================================
-// 2. AI COMPLAINT CLASSIFICATION & TRIAGE
+// 2. AI COMPLAINT CLASSIFICATION & TRIAGE (SECURED)
 // ==========================================
-app.post('/api/ai/classify', async (req, res) => {
+app.post('/api/ai/classify', requireFirebaseAuth, async (req: Request, res: Response) => {
   const { title = '', description = '', ward = '', category = '' } = req.body;
 
   const fallback = deterministicCivicClassifier(title, description);
 
   const ai = getGemini();
   if (!ai) {
-    // Return robust deterministic fallback
+    // Return robust deterministic fallback without failing
     return res.json({
       success: true,
       data: fallback,
@@ -204,7 +309,7 @@ Perform comprehensive civic triage and return ONLY a valid JSON object matching 
       source: 'gemini-2.5-flash',
     });
   } catch (err) {
-    console.warn('Gemini classification fallback triggered:', err);
+    console.warn('Gemini classification fallback triggered (free-tier resilient):', err);
     return res.json({
       success: true,
       data: fallback,
@@ -214,9 +319,9 @@ Perform comprehensive civic triage and return ONLY a valid JSON object matching 
 });
 
 // ==========================================
-// 3. AI COMPLAINT SUMMARY FOR FIELD CREW
+// 3. AI COMPLAINT SUMMARY FOR FIELD CREW (SECURED)
 // ==========================================
-app.post('/api/ai/summarize', async (req, res) => {
+app.post('/api/ai/summarize', requireFirebaseAuth, async (req: Request, res: Response) => {
   const { title = '', description = '', timeline = [] } = req.body;
 
   const ai = getGemini();
@@ -255,6 +360,7 @@ Return JSON:
       actionPlan: parsed.actionPlan || ['Inspect site', 'Verify scope of repair', 'Execute resolution'],
     });
   } catch (err) {
+    console.warn('Gemini summarize fallback triggered:', err);
     return res.json({
       success: true,
       summary: `${title}: ${description.slice(0, 200)}...`,
@@ -264,9 +370,9 @@ Return JSON:
 });
 
 // ==========================================
-// 4. DUPLICATE & SPAM DETECTION
+// 4. DUPLICATE & SPAM DETECTION (SECURED)
 // ==========================================
-app.post('/api/ai/duplicate-check', (req, res) => {
+app.post('/api/ai/duplicate-check', requireFirebaseAuth, (req: Request, res: Response) => {
   const { title = '', description = '', existingComplaints = [] } = req.body;
 
   const currentWords = new Set(`${title} ${description}`.toLowerCase().split(/\W+/).filter((w) => w.length > 3));

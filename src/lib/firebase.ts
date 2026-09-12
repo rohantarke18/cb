@@ -3,7 +3,6 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
-  signInAnonymously,
   signOut,
   onAuthStateChanged,
   updateProfile,
@@ -51,47 +50,11 @@ export async function signInWithGoogle() {
   }
 }
 
-export async function signInCitizenQuick(displayName?: string, emailOrPhone?: string): Promise<{ uid: string; displayName: string; email: string; isAnonymous: boolean }> {
-  try {
-    const userCredential = await signInAnonymously(auth);
-    if (displayName && userCredential.user) {
-      await updateProfile(userCredential.user, {
-        displayName: displayName,
-      });
-    }
-    return {
-      uid: userCredential.user.uid,
-      displayName: userCredential.user.displayName || displayName || 'Citizen User',
-      email: userCredential.user.email || emailOrPhone || '',
-      isAnonymous: true,
-    };
-  } catch (error: any) {
-    // When Anonymous Auth is not enabled in Firebase Console (throws auth/admin-restricted-operation),
-    // provide a seamless, persistent local citizen identity so user flows and reporting are never blocked.
-    console.warn('Anonymous auth unavailable (using resilient local identity session):', error?.code || error?.message);
-
-    const seedKey = emailOrPhone?.trim() || displayName?.trim() || 'citizen_guest';
-    const storageKey = `civicbridge_uid_${seedKey.replace(/[^a-zA-Z0-9_]/g, '_')}`;
-    let stableUid = localStorage.getItem(storageKey);
-    if (!stableUid) {
-      stableUid = `usr_${Math.floor(100000 + Math.random() * 900000)}_${Date.now().toString(36)}`;
-      localStorage.setItem(storageKey, stableUid);
-    }
-
-    return {
-      uid: stableUid,
-      displayName: displayName || 'Citizen User',
-      email: emailOrPhone && emailOrPhone.includes('@') ? emailOrPhone : `${stableUid}@citizen.civicbridge.gov.in`,
-      isAnonymous: true,
-    };
-  }
-}
-
 export async function logoutFirebase() {
   try {
     await signOut(auth);
-  } catch {
-    // Ignore signout error if in fallback mode
+  } catch (err) {
+    console.warn('Logout error:', err);
   }
 }
 

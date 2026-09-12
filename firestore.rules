@@ -42,23 +42,26 @@ service cloud.firestore {
       );
     }
 
-    function isAdmin() {
+    function isSuperAdmin() {
       return isSuperAdminEmail() || (
-        hasUserDoc() && (
-          getUserData().role == 'super_admin' ||
-          getUserData().role == 'department_admin'
-        )
+        hasUserDoc() && getUserData().role == 'super_admin'
+      );
+    }
+
+    function isDeptAdmin() {
+      return isSuperAdmin() || (
+        hasUserDoc() && getUserData().role == 'department_admin'
       );
     }
 
     function isOfficer() {
-      return isAdmin() || (
+      return isSuperAdmin() || isDeptAdmin() || (
         hasUserDoc() && getUserData().role == 'officer'
       );
     }
 
     function isExpert() {
-      return isAdmin() || (
+      return isSuperAdmin() || (
         hasUserDoc() && getUserData().role == 'expert'
       );
     }
@@ -85,7 +88,7 @@ service cloud.firestore {
              data.status in [
                'Submitted', 'Under Review', 'Assigned', 'In Progress',
                'Awaiting Information', 'Resolution Submitted',
-               'Citizen Verification', 'Resolved', 'Reopened', 'Rejected'
+               'Citizen Verification', 'Resolved', 'Closed', 'Disputed', 'Reopened', 'Rejected'
              ] &&
              data.evidence is list && data.evidence.size() <= 15 &&
              data.timeline is list && data.timeline.size() <= 50 &&
@@ -99,7 +102,7 @@ service cloud.firestore {
              data.category is string && data.category.size() <= 100 &&
              data.stage in ['Proposed', 'Under Review', 'Community Discussion', 'Pilot Approved', 'Implemented'] &&
              data.votes is number && data.votes >= 0 &&
-             data.voters is list && data.voters.size() <= 2000 &&
+             data.voters is list && data.voters.size() <= 5000 &&
              data.reviews is list && data.reviews.size() <= 50 &&
              data.comments is list && data.comments.size() <= 200;
     }
@@ -122,20 +125,25 @@ service cloud.firestore {
     }
 
     // ==========================================
-    // 1. USERS COLLECTION
+    // 1. USERS COLLECTION (STRICT ROLE PROTECTION)
     // ==========================================
     match /users/{userId} {
-      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
-      allow list: if isAdmin();
+      // User can read their own profile; admins and officers can read profiles for dispatch/coordination
+      allow get: if isValidId(userId) && (isOwner(userId) || isOfficer());
+      allow list: if isDeptAdmin();
 
-      // Only self-registration as citizen or admin provision
+      // Only self-registration as citizen OR admin provisioning
       allow create: if isValidId(userId) && isSignedIn() &&
                     request.auth.uid == userId &&
                     isValidUser(incoming()) &&
-                    (incoming().role == 'citizen' || isAdmin());
+                    (incoming().role == 'citizen' || isSuperAdmin());
 
+      // Profile updates: Citizens can NEVER update their own role
       allow update: if isValidId(userId) && isSignedIn() && isValidUser(incoming()) && (
-        isAdmin() ||
+        isSuperAdmin() ||
+        (
+          isDeptAdmin() && incoming().role in ['officer', 'expert']
+        ) ||
         (
           isOwner(userId) &&
           incoming().diff(existing()).affectedKeys().hasOnly([
@@ -144,31 +152,57 @@ service cloud.firestore {
         )
       );
 
-      allow delete: if isValidId(userId) && isAdmin();
+      allow delete: if isValidId(userId) && isSuperAdmin();
     }
 
     // ==========================================
-    // 2. PROBLEMS COLLECTION
+    // 2. PROBLEMS COLLECTION (PRIVATE CASE REPOSITORY)
     // ==========================================
     match /problems/{problemId} {
-      allow get: if isValidId(problemId);
-      allow list: if true; // Public civic transparency and mapping
+      // Citizens can only read their own private cases; officers read assigned/department cases; super admins read all
+      allow get: if isValidId(problemId) && isSignedIn() && (
+        isSuperAdmin() ||
+        isDeptAdmin() ||
+        (isOfficer() && (
+          existing().assignedOfficer.id == request.auth.uid ||
+          existing().assignedOfficer.email == request.auth.token.email
+        )) ||
+        existing().reporterUid == request.auth.uid
+      );
 
+      allow list: if isSignedIn() && (
+        isSuperAdmin() ||
+        isDeptAdmin() ||
+        isOfficer() ||
+        (request.query.limit <= 100)
+      );
+
+      // Authenticated citizen lodges complaint
       allow create: if isValidId(problemId) && isSignedIn() &&
                     isValidProblem(incoming()) &&
                     incoming().reporterUid == request.auth.uid;
 
+      // Role-delimited updates
       allow update: if isValidId(problemId) && isSignedIn() && isValidProblem(incoming()) && (
-        isAdmin() ||
-        // Field Officer updating status, assignments, resolution evidence
+        // Super Admin full authority
+        isSuperAdmin() ||
+        // Department Admin assigning officers or updating department workflow
         (
-          isOfficer() &&
+          isDeptAdmin() &&
           incoming().diff(existing()).affectedKeys().hasOnly([
-            'status', 'assignedOfficer', 'deadline', 'resolutionEvidence',
-            'timeline', 'updatedAt', 'internalNotes'
+            'status', 'department', 'assignedOfficer', 'deadline', 'priority',
+            'internalNotes', 'timeline', 'updatedAt'
           ])
         ) ||
-        // Reporting Citizen submitting verification or dispute
+        // Field Officer submitting ground progress or photo resolution evidence
+        (
+          isOfficer() &&
+          (existing().assignedOfficer.id == request.auth.uid || existing().assignedOfficer.email == request.auth.token.email) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'status', 'resolutionEvidence', 'timeline', 'internalNotes', 'updatedAt'
+          ])
+        ) ||
+        // Reporting Citizen submitting verification or dispute of resolution
         (
           existing().reporterUid == request.auth.uid &&
           incoming().diff(existing()).affectedKeys().hasOnly([
@@ -177,22 +211,38 @@ service cloud.firestore {
         )
       );
 
-      allow delete: if isValidId(problemId) && isAdmin();
+      allow delete: if isValidId(problemId) && isSuperAdmin();
     }
 
     // ==========================================
-    // 3. INNOVATIONS COLLECTION
+    // 3. PUBLIC PROBLEMS (SANITIZED TRANSPARENCY MIRROR)
+    // No citizen phone, email, internal notes, or private evidence
+    // ==========================================
+    match /public_problems/{problemId} {
+      allow get, list: if true;
+
+      allow create, update: if isSignedIn() &&
+                            (!('citizenPhone' in incoming())) &&
+                            (!('reporterEmail' in incoming())) &&
+                            (!('internalNotes' in incoming()));
+
+      allow delete: if isSuperAdmin();
+    }
+
+    // ==========================================
+    // 4. INNOVATIONS COLLECTION (COMMUNITY CO-CREATION)
     // ==========================================
     match /innovations/{innovationId} {
-      allow get: if isValidId(innovationId);
-      allow list: if true; // Public innovation hub
+      allow get, list: if true; // Public innovation co-creation
 
       allow create: if isValidId(innovationId) && isSignedIn() &&
                     isValidInnovation(incoming()) &&
-                    incoming().submitterUid == request.auth.uid;
+                    incoming().submitterUid == request.auth.uid &&
+                    incoming().votes == 0 &&
+                    incoming().voters.size() == 0;
 
       allow update: if isValidId(innovationId) && isSignedIn() && isValidInnovation(incoming()) && (
-        isAdmin() ||
+        isSuperAdmin() ||
         // Citizen Submitter editing text/details
         (
           existing().submitterUid == request.auth.uid &&
@@ -201,9 +251,13 @@ service cloud.firestore {
             'targetWard', 'costEstimate', 'timelineEstimate', 'attachments', 'updatedAt'
           ])
         ) ||
-        // Voting toggle: affects votes and voters list
+        // Tamper-proof voting: exactly 1 vote toggle per authenticated citizen
         (
-          incoming().diff(existing()).affectedKeys().hasOnly(['votes', 'voters', 'hasVoted'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['votes', 'voters', 'updatedAt']) &&
+          (
+            (incoming().voters.hasAll([request.auth.uid]) && incoming().votes == existing().votes + 1) ||
+            (!incoming().voters.hasAll([request.auth.uid]) && incoming().votes == existing().votes - 1)
+          )
         ) ||
         // Comments: appending citizen or expert discussions
         (
@@ -218,35 +272,42 @@ service cloud.firestore {
         )
       );
 
-      allow delete: if isValidId(innovationId) && (isAdmin() || (isSignedIn() && existing().submitterUid == request.auth.uid));
+      allow delete: if isValidId(innovationId) && (isSuperAdmin() || (isSignedIn() && existing().submitterUid == request.auth.uid));
+
+      // Voter subcollection for one-vote audit tracking
+      match /votes/{voterUid} {
+        allow read, write: if isSignedIn() && request.auth.uid == voterUid;
+      }
     }
 
     // ==========================================
-    // 4. CONSULTATIONS COLLECTION
+    // 5. CONSULTATIONS COLLECTION (PUBLIC POLICY POLLING)
     // ==========================================
     match /consultations/{consultationId} {
-      allow get: if isValidId(consultationId);
-      allow list: if true; // Public civic consultations
+      allow get, list: if true; // Public civic consultations
 
-      allow create: if isValidId(consultationId) && isAdmin() && isValidConsultation(incoming());
+      allow create: if isValidId(consultationId) && isDeptAdmin() && isValidConsultation(incoming());
 
       allow update: if isValidId(consultationId) && isSignedIn() && isValidConsultation(incoming()) && (
-        isAdmin() ||
-        // Citizen submitting responses to questions
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'questions', 'voters', 'totalResponses', 'updatedAt'
-        ])
+        isDeptAdmin() ||
+        // Citizen submitting survey answers
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'questions', 'voters', 'totalResponses', 'updatedAt'
+          ]) &&
+          incoming().voters.hasAll([request.auth.uid])
+        )
       );
 
-      allow delete: if isValidId(consultationId) && isAdmin();
+      allow delete: if isValidId(consultationId) && isSuperAdmin();
     }
 
     // ==========================================
-    // 5. CONNECTION TEST
+    // 6. CONNECTION TEST
     // ==========================================
     match /_connection_test/{docId} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isSuperAdmin();
     }
   }
 }

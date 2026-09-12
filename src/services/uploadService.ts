@@ -6,154 +6,118 @@ export interface UploadProgressCallback {
   (progress: number): void;
 }
 
+const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024; // 15MB
+
+const ALLOWED_MIME_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'video/mp4',
+  'video/webm',
+  'application/pdf',
+];
+
 export const uploadService = {
   /**
-   * Uploads file to Firebase Storage. Validates size, mime-type, and security boundaries.
-   * Gracefully falls back to optimized compressed client preview if offline or storage unavailable.
+   * Uploads file to Firebase Storage. Validates size, mime-type, and authentication.
+   * Strictly avoids DataURL/objectURL fallbacks. If upload fails, bubbles up error for user retry.
    */
   async uploadFile(
     file: File,
     onProgress?: UploadProgressCallback
   ): Promise<EvidenceItem> {
-    // 15MB Maximum Size Validation
-    const MAX_SIZE = 15 * 1024 * 1024;
-    if (file.size > MAX_SIZE) {
-      throw new Error(`File "${file.name}" exceeds the maximum 15MB limit.`);
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      throw new Error('Authentication required: Please sign in with your account to upload evidence.');
     }
 
-    // Determine and validate evidence type
+    // 15MB Maximum Size Validation
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      throw new Error(
+        `File "${file.name}" (${this.formatFileSize(file.size)}) exceeds the maximum allowed 15MB limit.`
+      );
+    }
+
+    // Mime-type validation
+    const isMimeAllowed = ALLOWED_MIME_TYPES.some((type) => {
+      if (file.type === type) return true;
+      if (file.type.startsWith('image/') && type.startsWith('image/')) return true;
+      return false;
+    });
+
+    if (!isMimeAllowed) {
+      throw new Error(
+        `File format "${file.type || file.name}" is not supported. Permitted formats: JPEG, PNG, WEBP, MP4, and PDF documents.`
+      );
+    }
+
+    // Determine category
     let itemType: EvidenceItem['type'] = 'document';
     if (file.type.startsWith('image/')) {
       itemType = 'image';
     } else if (file.type.startsWith('video/')) {
       itemType = 'video';
-    } else if (
-      file.type === 'application/pdf' ||
-      file.type.includes('word') ||
-      file.type.includes('document') ||
-      file.name.endsWith('.pdf') ||
-      file.name.endsWith('.doc') ||
-      file.name.endsWith('.docx')
-    ) {
-      itemType = 'document';
-    } else {
-      throw new Error(
-        `Unsupported file type "${file.type || file.name}". Allowed formats: Images (JPEG, PNG, WEBP), Videos (MP4, WEBM), and Documents (PDF, DOC).`
-      );
     }
 
     if (onProgress) {
-      onProgress(10);
+      onProgress(5);
     }
 
     const timestamp = Date.now();
     const sanitizedName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const userUid = auth.currentUser?.uid || 'guest';
-    const storagePath = `evidence/${userUid}/${timestamp}_${sanitizedName}`;
+    const storagePath = `evidence/${currentUser.uid}/${timestamp}_${sanitizedName}`;
+    const storageRef = ref(storage, storagePath);
 
-    try {
-      const storageRef = ref(storage, storagePath);
-      const uploadTask = uploadBytesResumable(storageRef, file, {
-        contentType: file.type || 'application/octet-stream',
-        customMetadata: {
-          uploadedBy: userUid,
-          originalName: file.name,
-          category: itemType,
+    const uploadTask = uploadBytesResumable(storageRef, file, {
+      contentType: file.type || 'application/octet-stream',
+      customMetadata: {
+        uploadedBy: currentUser.uid,
+        originalName: file.name,
+        category: itemType,
+      },
+    });
+
+    return new Promise<EvidenceItem>((resolve, reject) => {
+      uploadTask.on(
+        'state_changed',
+        (snapshot) => {
+          const progress = Math.round(
+            (snapshot.bytesTransferred / snapshot.totalBytes) * 100
+          );
+          if (onProgress) onProgress(progress);
         },
-      });
-
-      const downloadUrl = await new Promise<string>((resolve, reject) => {
-        uploadTask.on(
-          'state_changed',
-          (snapshot) => {
-            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 90;
-            if (onProgress) onProgress(Math.round(progress));
-          },
-          (error) => {
-            console.warn('Firebase Storage upload warning, falling back to persistent client URL:', error);
-            reject(error);
-          },
-          async () => {
-            try {
-              const url = await getDownloadURL(uploadTask.snapshot.ref);
-              resolve(url);
-            } catch (err) {
-              reject(err);
-            }
+        (error) => {
+          console.error('Firebase Storage upload error:', error);
+          let userMessage = `Upload failed for "${file.name}". Please check network connection and retry.`;
+          if (error.code === 'storage/unauthorized') {
+            userMessage = 'Storage permission denied. Ensure you are signed in and attaching permitted file formats.';
+          } else if (error.code === 'storage/canceled') {
+            userMessage = 'Upload was canceled.';
           }
-        );
-      });
-
-      if (onProgress) onProgress(100);
-
-      return {
-        id: `ev-${timestamp}-${Math.floor(Math.random() * 1000)}`,
-        name: file.name,
-        type: itemType,
-        url: downloadUrl,
-        size: file.size,
-        uploadedAt: new Date().toISOString(),
-      };
-    } catch (storageErr) {
-      console.warn('Using client-side persistent evidence fallback:', storageErr);
-      // Fallback to local DataURL so user is not blocked
-      let fallbackUrl = '';
-      if (itemType === 'image') {
-        fallbackUrl = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            const img = new Image();
-            img.onload = () => {
-              const maxDim = 1000;
-              let width = img.width;
-              let height = img.height;
-              if (width > maxDim || height > maxDim) {
-                if (width > height) {
-                  height = Math.round((height * maxDim) / width);
-                  width = maxDim;
-                } else {
-                  width = Math.round((width * maxDim) / height);
-                  height = maxDim;
-                }
-              }
-              const canvas = document.createElement('canvas');
-              canvas.width = width;
-              canvas.height = height;
-              const ctx = canvas.getContext('2d');
-              if (ctx) {
-                ctx.drawImage(img, 0, 0, width, height);
-                resolve(canvas.toDataURL('image/jpeg', 0.7));
-              } else {
-                resolve((e.target?.result as string) || URL.createObjectURL(file));
-              }
-            };
-            img.onerror = () => resolve((e.target?.result as string) || URL.createObjectURL(file));
-            img.src = e.target?.result as string;
-          };
-          reader.readAsDataURL(file);
-        });
-      } else {
-        fallbackUrl = URL.createObjectURL(file);
-      }
-
-      if (onProgress) onProgress(100);
-
-      return {
-        id: `ev-${timestamp}-${Math.floor(Math.random() * 1000)}`,
-        name: file.name,
-        type: itemType,
-        url: fallbackUrl,
-        size: file.size,
-        uploadedAt: new Date().toISOString(),
-      };
-    }
+          reject(new Error(userMessage));
+        },
+        async () => {
+          try {
+            const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+            resolve({
+              id: `ev-${timestamp}-${Math.floor(Math.random() * 1000)}`,
+              name: file.name,
+              type: itemType,
+              url: downloadUrl,
+              size: file.size,
+              uploadedAt: new Date().toISOString(),
+            });
+          } catch (err: any) {
+            reject(new Error(`Failed to retrieve file download URL: ${err.message}`));
+          }
+        }
+      );
+    });
   },
 
   formatFileSize(bytes: number): string {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   },
 };

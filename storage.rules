@@ -1,0 +1,46 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isPermittedType() {
+      return request.resource.contentType.matches('^(image/(jpeg|png|webp)|video/(mp4|webm)|application/pdf).*$');
+    }
+
+    function isUnderMaxSize() {
+      return request.resource.size <= 15 * 1024 * 1024;
+    }
+
+    // Citizen and submitter evidence uploads:
+    // Files are partitioned by owner UID: evidence/{userId}/{fileName}
+    match /evidence/{userId}/{fileName} {
+      // Users can only upload to their own user directory
+      allow write: if isOwner(userId) && isPermittedType() && isUnderMaxSize();
+      
+      // Read access: authenticated users with case access
+      allow read: if isSignedIn();
+      
+      // Delete access: only owner
+      allow delete: if isOwner(userId);
+    }
+
+    // Resolution evidence from field officers:
+    match /resolutions/{userId}/{fileName} {
+      allow write: if isOwner(userId) && isPermittedType() && isUnderMaxSize();
+      allow read: if isSignedIn();
+      allow delete: if isOwner(userId);
+    }
+
+    // Default safety deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

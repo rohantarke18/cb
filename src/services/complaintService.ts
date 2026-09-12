@@ -3,13 +3,14 @@ import {
   ProblemStatus,
   PriorityLevel,
   ProblemCategory,
+  ImpactScope,
   ResolutionEvidence,
   CitizenVerification,
   EvidenceItem,
   AiAssessment,
   TimelineEvent,
 } from '../types';
-import { db, auth, signInCitizenQuick, cleanFirestoreData } from '../lib/firebase';
+import { db, auth, cleanFirestoreData } from '../lib/firebase';
 import { INITIAL_SEED_PROBLEMS } from '../data/seedProblems';
 import { MUNICIPAL_OFFICERS } from '../data/officers';
 import {
@@ -22,9 +23,11 @@ import {
   deleteDoc,
   query,
   orderBy,
+  where,
 } from 'firebase/firestore';
 
 const PROBLEMS_COLLECTION = 'problems';
+const PUBLIC_PROBLEMS_COLLECTION = 'public_problems';
 const LOCAL_STORAGE_KEY = 'civicbridge_problems_cache_v2';
 
 function getLocalStoredProblems(): Problem[] {
@@ -58,6 +61,7 @@ export interface ComplaintFilter {
   searchTerm?: string;
   department?: string | 'All';
   reporterUid?: string;
+  assignedOfficerId?: string;
 }
 
 export function normalizeProblem(raw: any): Problem {
@@ -97,16 +101,68 @@ export function normalizeProblem(raw: any): Problem {
   };
 }
 
+/**
+ * Sanitizes a private problem into a safe public transparency record.
+ * Strips out citizen phone, email, private documents, and internal notes.
+ */
+export function sanitizeForPublic(p: Problem): any {
+  return {
+    id: p.id,
+    title: p.title,
+    description: p.description,
+    category: p.category,
+    department: p.department,
+    location: {
+      address: p.location.address,
+      ward: p.location.ward,
+      city: p.location.city,
+      district: p.location.district,
+      coordinates: p.location.coordinates,
+    },
+    priority: p.priority,
+    status: p.status,
+    deadline: p.deadline,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+    resolutionEvidence: p.resolutionEvidence
+      ? {
+          id: p.resolutionEvidence.id,
+          submittedAt: p.resolutionEvidence.submittedAt,
+          submittedBy: p.resolutionEvidence.submittedBy,
+          officerDesignation: p.resolutionEvidence.officerDesignation,
+          notes: p.resolutionEvidence.notes,
+          completionDate: p.resolutionEvidence.completionDate,
+          media: p.resolutionEvidence.media || [],
+        }
+      : undefined,
+    timeline: (p.timeline || []).map((t) => ({
+      id: t.id,
+      step: t.step || '1',
+      title: t.title || t.status,
+      timestamp: t.timestamp,
+      status: t.status,
+      actorRole: t.actorRole,
+      department: t.department,
+      notes: t.notes,
+    })),
+  };
+}
+
 export const complaintService = {
   /**
-   * Fetch all complaints from Cloud Firestore with local cache fallback
+   * Fetch complaints from Cloud Firestore with role-aware query and local fallback
    */
   async getComplaints(filter?: ComplaintFilter): Promise<Problem[]> {
     let list: Problem[] = [];
 
     try {
       const colRef = collection(db, PROBLEMS_COLLECTION);
-      const q = query(colRef, orderBy('createdAt', 'desc'));
+      let q = query(colRef, orderBy('createdAt', 'desc'));
+
+      if (filter?.reporterUid) {
+        q = query(colRef, where('reporterUid', '==', filter.reporterUid), orderBy('createdAt', 'desc'));
+      }
+
       const snapshot = await getDocs(q);
 
       if (!snapshot.empty) {
@@ -139,6 +195,9 @@ export const complaintService = {
       if (filter.department && filter.department !== 'All') {
         list = list.filter((p) => p.department === filter.department);
       }
+      if (filter.assignedOfficerId) {
+        list = list.filter((p) => p.assignedOfficer?.id === filter.assignedOfficerId);
+      }
       if (filter.searchTerm && filter.searchTerm.trim()) {
         const s = filter.searchTerm.toLowerCase();
         list = list.filter(
@@ -157,7 +216,7 @@ export const complaintService = {
   },
 
   /**
-   * Fetch single complaint by ID
+   * Fetch single complaint by ID with public fallback for unauthenticated tracking
    */
   async getComplaintById(id: string): Promise<Problem | null> {
     const cleanId = id.trim();
@@ -169,7 +228,16 @@ export const complaintService = {
         return normalizeProblem(snap.data());
       }
     } catch (err) {
-      console.warn(`Error fetching complaint ${id} from Firestore, checking local cache:`, err);
+      // If permission denied or not authorized for private complaint, try public transparency record
+      try {
+        const pubRef = doc(db, PUBLIC_PROBLEMS_COLLECTION, cleanId);
+        const pubSnap = await getDoc(pubRef);
+        if (pubSnap.exists()) {
+          return normalizeProblem(pubSnap.data());
+        }
+      } catch (pubErr) {
+        console.warn('Public record lookup notice:', pubErr);
+      }
     }
 
     const localList = getLocalStoredProblems();
@@ -185,7 +253,8 @@ export const complaintService = {
   },
 
   /**
-   * Create a new complaint in Cloud Firestore
+   * Create a new complaint in Cloud Firestore.
+   * Requires authenticated user. Maintains sanitized public mirror for tracking.
    */
   async createComplaint(data: {
     title: string;
@@ -202,7 +271,7 @@ export const complaintService = {
       pincode: string;
       coordinates?: { lat: number; lng: number };
     };
-    impactScope: Problem['impactScope'];
+    impactScope: ImpactScope;
     urgency: PriorityLevel;
     evidence: EvidenceItem[];
     citizenName: string;
@@ -210,6 +279,11 @@ export const complaintService = {
     reporterUid?: string;
     reporterEmail?: string;
   }): Promise<Problem> {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      throw new Error('Please sign in to lodge an official grievance with the municipal corporation.');
+    }
+
     const year = new Date().getFullYear();
     const randomDigits = Math.floor(100000 + Math.random() * 900000);
     const generatedId = `CIV-${year}-${randomDigits}`;
@@ -224,34 +298,34 @@ export const complaintService = {
       data.location?.ward
     );
 
-    // Default SLA deadline (e.g. 3 to 7 days from now depending on priority)
-    const daysToAdd =
-      aiAssessment.suggestedPriority === 'Critical'
-        ? 2
-        : aiAssessment.suggestedPriority === 'High'
-        ? 4
-        : 7;
-    const deadlineDate = new Date();
-    deadlineDate.setDate(deadlineDate.getDate() + daysToAdd);
-
     const now = new Date().toISOString();
+    const deadlineHours =
+      aiAssessment.suggestedPriority === 'Critical'
+        ? 24
+        : aiAssessment.suggestedPriority === 'High'
+        ? 48
+        : aiAssessment.suggestedPriority === 'Medium'
+        ? 96
+        : 168;
+
+    const deadlineDate = new Date(Date.now() + deadlineHours * 60 * 60 * 1000);
 
     const initialTimeline: TimelineEvent[] = [
       {
-        id: `t-${Date.now()}-1`,
-        step: '01',
-        title: 'Problem Reported with Verified Evidence',
+        id: `tl-${Date.now()}-1`,
+        step: '1',
+        title: 'Grievance Lodged',
         timestamp: now,
         status: 'Submitted',
-        actorName: data.citizenName || 'Citizen',
-        actorRole: 'Citizen Submitter',
-        notes: `Grievance registered under ${data.category}. Digital tracking docket activated with automated priority scoring.`,
+        actorName: data.citizenName || currentUser.displayName || 'Citizen Submitter',
+        actorRole: 'Citizen',
+        notes: `Grievance lodged via CivicBridge citizen portal. Target SLA deadline: ${deadlineHours} hours.`,
       },
       {
-        id: `t-${Date.now()}-2`,
-        step: '02',
-        title: 'AI Preliminary Triage & Priority Scoring',
-        timestamp: new Date(Date.now() + 1000).toISOString(),
+        id: `tl-${Date.now()}-2`,
+        step: '2',
+        title: 'AI Classification & Triage',
+        timestamp: new Date(Date.now() + 2000).toISOString(),
         status: 'Under Review',
         department: aiAssessment.suggestedDepartment,
         actorName: 'CivicBridge Automated Dispatcher',
@@ -264,17 +338,6 @@ export const complaintService = {
       data.citizenPhone && data.citizenPhone.length > 5
         ? data.citizenPhone.slice(0, 3) + ' **** ' + data.citizenPhone.slice(-2)
         : '+91 98200 ****0';
-
-    // Ensure session uid if citizen is reporting anonymously
-    let effectiveUid = data.reporterUid || auth.currentUser?.uid;
-    if (!effectiveUid) {
-      try {
-        const anonUser = await signInCitizenQuick(data.citizenName || 'Citizen Submitter');
-        effectiveUid = anonUser.uid;
-      } catch (authErr) {
-        console.warn('Quick citizen auth note:', authErr);
-      }
-    }
 
     const newProblem: Problem = {
       id: generatedId,
@@ -295,17 +358,23 @@ export const complaintService = {
       deadline: deadlineDate.toISOString(),
       createdAt: now,
       updatedAt: now,
-      citizenName: data.citizenName || 'Citizen',
+      citizenName: data.citizenName || currentUser.displayName || 'Citizen',
+      citizenPhone: data.citizenPhone,
       citizenPhoneMasked: maskedPhone,
-      reporterUid: effectiveUid || 'citizen_guest',
-      reporterEmail: data.reporterEmail || auth.currentUser?.email || '',
+      reporterUid: currentUser.uid,
+      reporterEmail: data.reporterEmail || currentUser.email || '',
     };
 
+    // Save full record to private collection
     const docRef = doc(db, PROBLEMS_COLLECTION, generatedId);
+    await setDoc(docRef, cleanFirestoreData(newProblem));
+
+    // Save sanitized record to public collection for unauthenticated tracking
     try {
-      await setDoc(docRef, cleanFirestoreData(newProblem));
-    } catch (e) {
-      console.warn('Firestore setDoc notice, saved to local cache:', e);
+      const pubDocRef = doc(db, PUBLIC_PROBLEMS_COLLECTION, generatedId);
+      await setDoc(pubDocRef, cleanFirestoreData(sanitizeForPublic(newProblem)));
+    } catch (pubErr) {
+      console.warn('Public record sync note:', pubErr);
     }
 
     const currentList = getLocalStoredProblems();
@@ -330,187 +399,165 @@ export const complaintService = {
       updatedAt: new Date().toISOString(),
     };
 
+    await updateDoc(docRef, cleanFirestoreData({
+      ...updates,
+      updatedAt: merged.updatedAt,
+    }));
+
+    // Keep public mirror updated
     try {
-      await updateDoc(docRef, cleanFirestoreData({
-        ...updates,
-        updatedAt: merged.updatedAt,
-      }));
-    } catch (e) {
-      console.warn('Firestore updateDoc notice, updating local cache:', e);
+      const pubDocRef = doc(db, PUBLIC_PROBLEMS_COLLECTION, id);
+      await setDoc(pubDocRef, cleanFirestoreData(sanitizeForPublic(merged)), { merge: true });
+    } catch (pubErr) {
+      console.warn('Public mirror update note:', pubErr);
     }
 
     const currentList = getLocalStoredProblems();
-    const updatedList = currentList.map((p) => (p.id === id ? merged : p));
-    saveLocalProblems(updatedList);
+    saveLocalProblems(currentList.map((p) => (p.id === id ? merged : p)));
 
     return merged;
   },
 
   /**
-   * Delete complaint from Firestore (User requirement: records must be editable, like deleting)
+   * Update administrative or workflow status
    */
-  async deleteComplaint(id: string): Promise<void> {
-    const docRef = doc(db, PROBLEMS_COLLECTION, id);
-    try {
-      await deleteDoc(docRef);
-    } catch (e) {
-      console.warn('Firestore deleteDoc notice, removing from local cache:', e);
-    }
+  async updateStatus(
+    id: string,
+    newStatus: ProblemStatus,
+    notes?: string,
+    actorName?: string,
+    actorRole?: string
+  ): Promise<Problem> {
+    const existing = await this.getComplaintById(id);
+    if (!existing) throw new Error(`Complaint ${id} not found`);
 
-    const currentList = getLocalStoredProblems();
-    saveLocalProblems(currentList.filter((p) => p.id !== id));
+    const timelineEvent: TimelineEvent = {
+      id: `tl-${Date.now()}`,
+      step: `${existing.timeline.length + 1}`,
+      title: `Status: ${newStatus}`,
+      timestamp: new Date().toISOString(),
+      status: newStatus,
+      actorName: actorName || auth.currentUser?.displayName || 'Municipal Authority',
+      actorRole: actorRole || 'Official',
+      notes: notes || `Case status updated to ${newStatus}.`,
+    };
+
+    return this.updateComplaint(id, {
+      status: newStatus,
+      timeline: [...existing.timeline, timelineEvent],
+    });
   },
 
   /**
-   * Assign an official officer and set target SLA resolution deadline
+   * Assign complaint to municipal officer
    */
   async assignOfficer(
     problemId: string,
-    officer: { id: string; name: string; designation: string; department: string },
-    deadline: string
+    officer: string | { id: string; name: string; designation: string; department: string },
+    deadline?: string,
+    assignedBy?: string,
+    notes?: string
   ): Promise<Problem> {
+    let officerObj: { id: string; name: string; designation: string; department: string };
+
+    if (typeof officer === 'string') {
+      const found = MUNICIPAL_OFFICERS.find((o) => o.id === officer || o.name === officer);
+      officerObj = found
+        ? {
+            id: found.id,
+            name: found.name,
+            designation: found.designation,
+            department: found.department,
+          }
+        : {
+            id: officer,
+            name: 'Municipal Field Engineer',
+            designation: 'Junior Engineer',
+            department: 'Engineering Services',
+          };
+    } else {
+      officerObj = officer;
+    }
+
     const problem = await this.getComplaintById(problemId);
-    if (!problem) throw new Error('Case not found');
+    if (!problem) throw new Error('Problem not found');
 
     const timelineEvent: TimelineEvent = {
-      id: `t-${Date.now()}`,
-      step: '03',
-      title: 'Field Officer Assigned & SLA Target Fixed',
+      id: `tl-${Date.now()}`,
+      step: `${problem.timeline.length + 1}`,
+      title: 'Field Officer Assigned',
       timestamp: new Date().toISOString(),
       status: 'In Progress',
-      department: officer.department,
-      actorName: officer.name,
-      actorRole: officer.designation,
-      notes: `Assigned to ${officer.name} (${officer.designation}). Resolution committed by ${new Date(
-        deadline
-      ).toLocaleDateString()}.`,
+      actorName: assignedBy || auth.currentUser?.displayName || 'Department Supervisor',
+      actorRole: 'Supervisor',
+      notes: notes || `Case assigned to ${officerObj.name} (${officerObj.designation}) for ground remediation.`,
     };
 
-    return this.updateComplaint(problemId, {
-      assignedOfficer: officer,
-      deadline,
+    const updates: Partial<Problem> = {
+      assignedOfficer: officerObj,
       status: 'In Progress',
       timeline: [...problem.timeline, timelineEvent],
-    });
+    };
+    if (deadline) {
+      updates.deadline = deadline;
+    }
+
+    return this.updateComplaint(problemId, updates);
   },
 
   /**
-   * Upload and submit resolution evidence by Department/Officer
+   * Submit Resolution Proof by Field Officer
    */
   async submitResolution(
     problemId: string,
-    evidence: {
-      submittedBy: string;
-      officerDesignation: string;
-      notes: string;
-      media: EvidenceItem[];
-      workOrderRef?: string;
-      completionDate: string;
-    }
+    resolution: ResolutionEvidence | any,
+    officerName?: string
   ): Promise<Problem> {
     const problem = await this.getComplaintById(problemId);
-    if (!problem) throw new Error('Case not found');
+    if (!problem) throw new Error('Problem not found');
 
-    const resolution: ResolutionEvidence = {
-      id: `res-${Date.now()}`,
-      submittedAt: new Date().toISOString(),
-      submittedBy: evidence.submittedBy,
-      officerDesignation: evidence.officerDesignation,
-      notes: evidence.notes,
-      media: evidence.media,
-      workOrderRef: evidence.workOrderRef || `WO-${Date.now().toString().slice(-6)}`,
-      completionDate: evidence.completionDate || new Date().toISOString().slice(0, 10),
+    const resolutionEvidence: ResolutionEvidence = {
+      id: resolution.id || `res-${Date.now()}`,
+      submittedAt: resolution.submittedAt || new Date().toISOString(),
+      submittedBy: resolution.submittedBy || officerName || auth.currentUser?.displayName || 'Field Officer',
+      officerDesignation: resolution.officerDesignation || 'Field Executive Engineer',
+      notes: resolution.notes || resolution.summaryOfWorkDone || 'Remediation completed.',
+      media: resolution.media || [],
+      workOrderRef: resolution.workOrderRef,
+      completionDate: resolution.completionDate || new Date().toISOString().slice(0, 10),
     };
 
     const timelineEvent: TimelineEvent = {
-      id: `t-${Date.now()}`,
-      step: '04',
-      title: 'Municipal Resolution Evidence Submitted',
+      id: `tl-${Date.now()}`,
+      step: `${problem.timeline.length + 1}`,
+      title: 'Resolution Evidence Submitted',
       timestamp: new Date().toISOString(),
       status: 'Citizen Verification',
-      department: problem.department,
-      actorName: evidence.submittedBy,
-      actorRole: evidence.officerDesignation,
-      notes: `Field work reported complete with ${evidence.media.length} visual evidence items attached. Locked awaiting citizen verification.`,
+      actorName: resolutionEvidence.submittedBy,
+      actorRole: 'Field Executive Engineer',
+      notes: `Resolution work completed. Photographic ground proof submitted: ${resolutionEvidence.notes}`,
     };
 
     return this.updateComplaint(problemId, {
-      resolutionEvidence: resolution,
       status: 'Citizen Verification',
+      resolutionEvidence,
       timeline: [...problem.timeline, timelineEvent],
     });
   },
 
   /**
-   * Citizen verifies or disputes the resolution
+   * Alias for submitResolution
    */
-  async submitCitizenVerification(
+  async submitResolutionProof(
     problemId: string,
-    verification: {
-      status: 'verified' | 'disputed';
-      feedbackNotes?: string;
-      disputeReason?: string;
-      satisfactionRating?: number;
-    }
+    resolution: any,
+    officerName?: string
   ): Promise<Problem> {
-    const problem = await this.getComplaintById(problemId);
-    if (!problem) throw new Error('Case not found');
-
-    const record: CitizenVerification = {
-      status: verification.status,
-      verifiedAt: new Date().toISOString(),
-      feedbackNotes: verification.feedbackNotes,
-      disputeReason: verification.disputeReason,
-      satisfactionRating: verification.satisfactionRating,
-    };
-
-    const isApproved = verification.status === 'verified';
-    const nextStatus: ProblemStatus = isApproved ? 'Resolved' : 'In Progress';
-
-    const timelineEvent: TimelineEvent = {
-      id: `t-${Date.now()}`,
-      step: '05',
-      title: isApproved ? 'Citizen Verified & Docket Closed' : 'Citizen Disputed Resolution',
-      timestamp: new Date().toISOString(),
-      status: nextStatus,
-      actorName: problem.citizenName,
-      actorRole: 'Reporting Citizen',
-      notes: isApproved
-        ? `Citizen audited resolution photos and approved closure (Rating: ${verification.satisfactionRating || 5}/5).`
-        : `Citizen raised an objection: "${verification.disputeReason || 'Work unsatisfactory'}". Case reopened for re-inspection.`,
-    };
-
-    return this.updateComplaint(problemId, {
-      citizenVerification: record,
-      status: nextStatus,
-      timeline: [...problem.timeline, timelineEvent],
-    });
+    return this.submitResolution(problemId, resolution, officerName);
   },
 
   /**
-   * Reopen a problem
-   */
-  async reopenComplaint(problemId: string, reason: string): Promise<Problem> {
-    const problem = await this.getComplaintById(problemId);
-    if (!problem) throw new Error('Case not found');
-
-    const timelineEvent: TimelineEvent = {
-      id: `t-${Date.now()}`,
-      step: 'Reopen',
-      title: 'Docket Reopened for Administrative Review',
-      timestamp: new Date().toISOString(),
-      status: 'Under Review',
-      notes: `Reopened reason: ${reason}`,
-    };
-
-    return this.updateComplaint(problemId, {
-      status: 'Under Review',
-      timeline: [...problem.timeline, timelineEvent],
-    });
-  },
-
-  /**
-   * Citizen verification alias for verifyResolution
+   * Citizen Resolution Verification or Dispute
    */
   async verifyResolution(
     problemId: string,
@@ -519,68 +566,142 @@ export const complaintService = {
       feedbackNotes?: string;
       disputeReason?: string;
       satisfactionRating?: number;
-    }
-  ): Promise<Problem> {
-    return this.submitCitizenVerification(problemId, verification);
-  },
-
-  /**
-   * Update problem status with administrative audit trail
-   */
-  async updateStatus(
-    problemId: string,
-    newStatus: ProblemStatus,
-    note?: string,
-    actorName?: string
+    },
+    citizenName?: string
   ): Promise<Problem> {
     const problem = await this.getComplaintById(problemId);
-    if (!problem) throw new Error('Complaint not found');
+    if (!problem) throw new Error('Problem not found');
+
+    const isAccepted = verification.status === 'verified';
+    const citizenVerification: CitizenVerification = {
+      status: verification.status,
+      verifiedAt: new Date().toISOString(),
+      feedbackNotes: verification.feedbackNotes,
+      disputeReason: verification.disputeReason,
+      satisfactionRating: verification.satisfactionRating || (isAccepted ? 5 : 2),
+    };
+
+    const newStatus: ProblemStatus = isAccepted ? 'Resolved' : 'Reopened';
 
     const timelineEvent: TimelineEvent = {
-      id: `t-${Date.now()}`,
-      step: '03',
-      title: `Status Transitioned to ${newStatus}`,
+      id: `tl-${Date.now()}`,
+      step: `${problem.timeline.length + 1}`,
+      title: isAccepted ? 'Citizen Verified Resolution' : 'Resolution Disputed by Citizen',
       timestamp: new Date().toISOString(),
       status: newStatus,
-      department: problem.department,
-      actorName: actorName || 'Authorized Officer',
-      actorRole: 'Administrative Officer',
-      notes: note || `Status transitioned to ${newStatus}.`,
+      actorName: citizenName || auth.currentUser?.displayName || 'Citizen Submitter',
+      actorRole: 'Citizen Submitter',
+      notes: isAccepted
+        ? `Citizen confirmed satisfactory remediation. Rating: ${citizenVerification.satisfactionRating}/5.`
+        : `Citizen disputed the resolution. Reason: ${verification.disputeReason || 'Unsatisfactory work'}. Case reopened.`,
     };
 
     return this.updateComplaint(problemId, {
       status: newStatus,
+      citizenVerification,
       timeline: [...problem.timeline, timelineEvent],
     });
   },
 
   /**
-   * Add internal administrative note to case docket
+   * Alias for verifyResolution
+   */
+  async submitCitizenVerification(
+    problemId: string,
+    verification: any,
+    citizenName?: string
+  ): Promise<Problem> {
+    const isAccepted = verification.isAccepted ?? verification.status === 'verified';
+    return this.verifyResolution(
+      problemId,
+      {
+        status: isAccepted ? 'verified' : 'disputed',
+        feedbackNotes: verification.feedback || verification.feedbackNotes,
+        disputeReason: verification.disputeReason,
+        satisfactionRating: verification.rating || verification.satisfactionRating,
+      },
+      citizenName
+    );
+  },
+
+  /**
+   * Add internal municipal supervisory note
    */
   async addInternalNote(
     problemId: string,
-    author: string,
-    role: string,
-    noteText: string
+    authorOrNote: string,
+    designationOrRole?: string,
+    noteText?: string
   ): Promise<Problem> {
     const problem = await this.getComplaintById(problemId);
-    if (!problem) throw new Error('Complaint not found');
+    if (!problem) throw new Error('Problem not found');
+
+    const author = noteText !== undefined ? authorOrNote : auth.currentUser?.displayName || 'Authorized Officer';
+    const note = noteText !== undefined ? noteText : authorOrNote;
+
+    const newNote = {
+      id: `note-${Date.now()}`,
+      author,
+      note,
+      timestamp: new Date().toISOString(),
+    };
+
+    return this.updateComplaint(problemId, {
+      internalNotes: [...(problem.internalNotes || []), newNote],
+    });
+  },
+
+  /**
+   * Add milestone timeline event
+   */
+  async addTimelineEvent(
+    problemId: string,
+    event: {
+      status: ProblemStatus;
+      actorName?: string;
+      actorRole?: string;
+      notes?: string;
+      department?: string;
+      step?: string;
+      title?: string;
+    }
+  ): Promise<Problem> {
+    const problem = await this.getComplaintById(problemId);
+    if (!problem) throw new Error('Problem not found');
 
     const timelineEvent: TimelineEvent = {
-      id: `t-${Date.now()}`,
-      step: '02',
-      title: 'Internal Administrative Note Appended',
+      id: `tl-${Date.now()}`,
+      step: event.step || `${problem.timeline.length + 1}`,
+      title: event.title || event.status,
       timestamp: new Date().toISOString(),
-      status: problem.status,
-      department: problem.department,
-      actorName: author,
-      actorRole: role,
-      notes: noteText,
+      status: event.status,
+      actorName: event.actorName || auth.currentUser?.displayName || 'Authority',
+      actorRole: event.actorRole || 'Official',
+      department: event.department || problem.department,
+      notes: event.notes,
     };
 
     return this.updateComplaint(problemId, {
       timeline: [...problem.timeline, timelineEvent],
     });
+  },
+
+  /**
+   * Delete a complaint
+   */
+  async deleteComplaint(id: string): Promise<void> {
+    const docRef = doc(db, PROBLEMS_COLLECTION, id);
+    await deleteDoc(docRef);
+
+    try {
+      const pubDocRef = doc(db, PUBLIC_PROBLEMS_COLLECTION, id);
+      await deleteDoc(pubDocRef);
+    } catch (pubErr) {
+      console.warn('Public mirror delete note:', pubErr);
+    }
+
+    const currentList = getLocalStoredProblems();
+    saveLocalProblems(currentList.filter((p) => p.id !== id));
   },
 
   /**
@@ -590,15 +711,23 @@ export const complaintService = {
     title: string,
     description: string,
     category: ProblemCategory,
-    impactScope: Problem['impactScope'],
+    impactScope: ImpactScope,
     urgency: PriorityLevel,
     ward?: string
   ): Promise<AiAssessment> {
     const fallback = this.generateAiAssessment(title, description, category, impactScope, urgency);
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      const token = await auth.currentUser?.getIdToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
       const res = await fetch('/api/ai/classify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           title,
           description,
@@ -606,6 +735,7 @@ export const complaintService = {
           ward,
         }),
       });
+
       if (res.ok) {
         const json = await res.json();
         if (json.success && json.data) {
@@ -633,7 +763,7 @@ export const complaintService = {
     title: string,
     description: string,
     category: ProblemCategory,
-    impactScope: Problem['impactScope'],
+    impactScope: ImpactScope,
     urgency: PriorityLevel
   ): AiAssessment {
     const text = (title + ' ' + description).toLowerCase();
@@ -680,29 +810,16 @@ export const complaintService = {
       'Other Civic Issues': 'Central Municipal Grievance Redressal Cell',
     };
 
-    const suggestedDepartment = departmentMap[category] || 'Central Municipal Administration';
-
-    const reasoning = [
-      `Computed multi-factor priority rating: ${score}/100 based on citizen-reported impact scope (${impactScope}) and urgency level (${urgency}).`,
-      `Automated routing algorithm matched category "${category}" directly to ${suggestedDepartment}.`,
-      `Estimated response SLA benchmark: ${priority === 'Critical' ? '48 Hours' : priority === 'High' ? '96 Hours' : '7 Working Days'}.`,
-    ];
-
-    const entities: string[] = [];
-    if (text.includes('road') || text.includes('street') || text.includes('lane')) entities.push('Road Corridor');
-    if (text.includes('pothole')) entities.push('Surface Depression');
-    if (text.includes('water') || text.includes('pipe') || text.includes('drain')) entities.push('Hydraulic Line');
-    if (text.includes('light') || text.includes('pole')) entities.push('Illumination Asset');
-    if (text.includes('garbage') || text.includes('waste')) entities.push('Solid Waste');
-    if (entities.length === 0) entities.push('Civic Infrastructure', 'Public Amenity');
-
     return {
       category,
-      suggestedDepartment,
+      suggestedDepartment: departmentMap[category] || 'Central Municipal Grievance Redressal Cell',
       suggestedPriority: priority,
       priorityScore: score,
-      reasoning,
-      keyIdentifiedEntities: entities,
+      reasoning: [
+        `Base urgency level evaluated as ${urgency} with ${impactScope} impact range.`,
+        `Automated municipal routing dispatched to ${departmentMap[category] || 'Central Redressal Cell'}.`,
+      ],
+      keyIdentifiedEntities: [category, urgency],
       isPreliminary: true,
       generatedAt: new Date().toISOString(),
     };

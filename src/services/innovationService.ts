@@ -6,7 +6,7 @@ import {
   InnovationCategory,
   EvidenceItem,
 } from '../types';
-import { db, cleanFirestoreData } from '../lib/firebase';
+import { db, auth, cleanFirestoreData } from '../lib/firebase';
 import { INITIAL_SEED_INNOVATIONS } from '../data/seedInnovations';
 import {
   collection,
@@ -18,6 +18,7 @@ import {
   deleteDoc,
   query,
   orderBy,
+  runTransaction,
 } from 'firebase/firestore';
 
 const INNOVATIONS_COLLECTION = 'innovations';
@@ -118,6 +119,7 @@ export const innovationService = {
     const baseScore = Math.min(Math.max(Math.floor(descLen / 15) + 60, 65), 94);
 
     const now = new Date().toISOString();
+    const submitterUid = data.submitterUid || auth.currentUser?.uid;
 
     const newInnovation: Innovation = {
       id: generatedId,
@@ -129,14 +131,14 @@ export const innovationService = {
       stage: 'Proposed',
       submitterName: data.submitterName || 'Citizen Innovator',
       submitterType: data.submitterType || 'Citizen',
-      submitterUid: data.submitterUid,
-      submitterEmail: data.submitterEmail,
+      submitterUid: submitterUid,
+      submitterEmail: data.submitterEmail || auth.currentUser?.email || undefined,
       targetWard: data.targetWard || 'Ward 14 (Shivajinagar)',
       costEstimate: data.costEstimate || 'To be assessed',
       timelineEstimate: data.timelineEstimate || '3-6 months',
       feasibilityScore: baseScore,
       votes: 1, // Submitter initial vote
-      voters: data.submitterUid ? [data.submitterUid] : [],
+      voters: submitterUid ? [submitterUid] : [],
       reviews: [],
       comments: [],
       attachments: data.attachments || [],
@@ -167,7 +169,7 @@ export const innovationService = {
   },
 
   /**
-   * Delete innovation (Editable & Deletable)
+   * Delete innovation
    */
   async deleteInnovation(id: string): Promise<void> {
     const docRef = doc(db, INNOVATIONS_COLLECTION, id);
@@ -175,37 +177,75 @@ export const innovationService = {
   },
 
   /**
-   * Upvote innovation (returns updated Innovation)
+   * Secure, atomic, transactional innovation voting.
+   * Enforces 1 authenticated citizen = 1 vote.
+   * Prevents race conditions and arbitrary client manipulation of votes count.
    */
-  async upvoteInnovation(id: string, voterId?: string): Promise<Innovation> {
-    const existing = await this.getInnovationById(id);
-    if (!existing) throw new Error('Innovation not found');
+  async voteInnovation(id: string, _optionalVoterId?: string): Promise<{ votes: number; hasVoted: boolean }> {
+    const currentUser = auth.currentUser;
+    if (!currentUser) {
+      throw new Error('Please sign in as an authenticated citizen to vote on civic innovations.');
+    }
 
-    const voter = voterId || 'anon-voter';
-    const voters = existing.voters || [];
-    const alreadyVoted = voters.includes(voter);
+    const voterUid = currentUser.uid;
+    const innovationRef = doc(db, INNOVATIONS_COLLECTION, id.trim());
+    const voteAuditRef = doc(db, INNOVATIONS_COLLECTION, id.trim(), 'votes', voterUid);
 
-    const updatedVoters = alreadyVoted
-      ? voters.filter((v) => v !== voter)
-      : [...voters, voter];
+    return await runTransaction(db, async (transaction) => {
+      const invDoc = await transaction.get(innovationRef);
+      if (!invDoc.exists()) {
+        throw new Error('Innovation proposal not found.');
+      }
 
-    const updatedVotes = Math.max(0, existing.votes + (alreadyVoted ? -1 : 1));
+      const invData = invDoc.data();
+      const currentVoters: string[] = Array.isArray(invData.voters) ? invData.voters : [];
+      const currentVotes: number = typeof invData.votes === 'number' ? invData.votes : currentVoters.length;
 
-    return this.updateInnovation(id, {
-      votes: updatedVotes,
-      voters: updatedVoters,
-      hasVoted: !alreadyVoted,
+      const alreadyVoted = currentVoters.includes(voterUid);
+      const now = new Date().toISOString();
+
+      let newVotes: number;
+      let newVoters: string[];
+
+      if (alreadyVoted) {
+        // Toggle OFF vote
+        newVotes = Math.max(0, currentVotes - 1);
+        newVoters = currentVoters.filter((uid) => uid !== voterUid);
+        transaction.delete(voteAuditRef);
+      } else {
+        // Toggle ON vote
+        newVotes = currentVotes + 1;
+        newVoters = [...currentVoters, voterUid];
+        transaction.set(voteAuditRef, {
+          voterUid,
+          votedAt: now,
+        });
+      }
+
+      transaction.update(innovationRef, {
+        votes: newVotes,
+        voters: newVoters,
+        updatedAt: now,
+      });
+
+      return {
+        votes: newVotes,
+        hasVoted: !alreadyVoted,
+      };
     });
   },
 
   /**
-   * Upvote / toggle vote
+   * Backwards compatible upvoteInnovation alias
    */
-  async voteInnovation(id: string, voterId?: string): Promise<{ votes: number; hasVoted: boolean }> {
-    const updated = await this.upvoteInnovation(id, voterId);
+  async upvoteInnovation(id: string, voterId?: string): Promise<Innovation> {
+    const result = await this.voteInnovation(id, voterId);
+    const updated = await this.getInnovationById(id);
+    if (!updated) throw new Error('Innovation not found after vote.');
     return {
-      votes: updated.votes,
-      hasVoted: updated.hasVoted ?? false,
+      ...updated,
+      votes: result.votes,
+      hasVoted: result.hasVoted,
     };
   },
 
