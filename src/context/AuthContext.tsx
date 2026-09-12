@@ -15,6 +15,7 @@ import {
   createUserWithEmailAndPassword,
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
+import { auditLogService } from '../services/auditLogService';
 
 const SUPER_ADMIN_EMAILS = [
   'rohantarke07@gmail.com',
@@ -251,6 +252,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const targetRef = doc(db, 'users', targetUid);
     await updateDoc(targetRef, cleanFirestoreData(updates));
+
+    auditLogService.logAction(
+      'ROLE_PROVISIONED',
+      'user',
+      targetUid,
+      `Official role provisioned: "${newRole}" (Department: ${department || 'N/A'}, Designation: ${designation || 'N/A'}) by ${user.name} (${user.role}).`,
+      {
+        uid: user.id,
+        name: user.name,
+        role: user.role,
+      }
+    ).catch(() => {});
   };
 
   const role = user?.role || 'citizen';

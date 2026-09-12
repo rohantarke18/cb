@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { Settings, Shield, Bell, Lock, Globe, Clock, UserCheck, AlertCircle, CheckCircle2, Loader2, UserPlus } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Settings, Shield, Bell, Lock, Globe, Clock, UserCheck, AlertCircle, CheckCircle2, Loader2, UserPlus, FileText, RefreshCw } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useNotifications } from '../../context/NotificationContext';
 import { UserRole } from '../../types';
+import { auditLogService, AuditLogEntry } from '../../services/auditLogService';
 
 export const AdminSettingsPage: React.FC = () => {
   const { user, isSuperAdmin, isDeptAdmin, provisionOfficialUser } = useAuth();
@@ -16,6 +17,28 @@ export const AdminSettingsPage: React.FC = () => {
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [provisionSuccess, setProvisionSuccess] = useState<string | null>(null);
   const [provisionError, setProvisionError] = useState<string | null>(null);
+
+  // Audit Logs State
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+
+  const loadAuditLogs = async () => {
+    setIsLoadingLogs(true);
+    try {
+      const logs = await auditLogService.getRecentLogs(25);
+      setAuditLogs(logs);
+    } catch (err) {
+      console.warn('Failed to load audit logs:', err);
+    } finally {
+      setIsLoadingLogs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isSuperAdmin || isDeptAdmin) {
+      loadAuditLogs();
+    }
+  }, [isSuperAdmin, isDeptAdmin]);
 
   const handleProvisionSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,6 +58,7 @@ export const AdminSettingsPage: React.FC = () => {
       );
       showToast('success', 'Role Provisioned', `Official privileges updated for ${targetUid}`);
       setTargetUid('');
+      loadAuditLogs();
     } catch (err: any) {
       console.error('Provisioning error:', err);
       setProvisionError(err.message || 'Failed to provision user role. Ensure you have administrator rights.');
@@ -240,6 +264,72 @@ export const AdminSettingsPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Administrative Audit Trail (Super Admins & Dept Admins) */}
+      {(isSuperAdmin || isDeptAdmin) && (
+        <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-2xs space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-700 flex items-center justify-center">
+                <FileText className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">
+                  Administrative Audit Trail
+                </h2>
+                <p className="text-[11px] text-slate-500">
+                  Immutable traceability log of officer assignments, role updates, status changes, and resolutions.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={loadAuditLogs}
+              disabled={isLoadingLogs}
+              className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              title="Refresh Audit Logs"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingLogs ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Refresh</span>
+            </button>
+          </div>
+
+          {auditLogs.length === 0 ? (
+            <div className="py-6 text-center text-xs text-slate-400 bg-slate-50 rounded-lg border border-dashed border-slate-200">
+              No audit records logged yet. Administrative actions will appear here automatically.
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100 max-h-72 overflow-y-auto">
+              {auditLogs.map((log) => (
+                <div key={log.id} className="py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded font-mono font-bold text-[10px] bg-slate-100 text-slate-700">
+                        {log.action}
+                      </span>
+                      <span className="text-slate-800 font-medium">
+                        {log.details}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-400 flex items-center gap-2">
+                      <span>By: {log.performedBy?.name || 'Authorized Official'} ({log.performedBy?.role || 'Admin'})</span>
+                      <span>•</span>
+                      <span>Target: {log.entityId}</span>
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-slate-400 font-mono shrink-0">
+                    {new Date(log.timestamp).toLocaleString([], {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

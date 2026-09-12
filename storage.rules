@@ -18,24 +18,41 @@ service firebase.storage {
       return request.resource.size <= 15 * 1024 * 1024;
     }
 
+    function isSuperAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'rohantarke07@gmail.com' ||
+        request.auth.token.email == 'admin@civicbridge.gov.in' ||
+        (request.auth.token.role != null && request.auth.token.role == 'super_admin')
+      );
+    }
+
+    function isAuthorizedOfficial() {
+      return isSuperAdmin() || (
+        isSignedIn() &&
+        request.auth.token.role != null &&
+        (request.auth.token.role in ['officer', 'department_admin'])
+      );
+    }
+
     // Citizen and submitter evidence uploads:
-    // Files are partitioned by owner UID: evidence/{userId}/{fileName}
+    // Partitioned by citizen UID: evidence/{userId}/{fileName}
     match /evidence/{userId}/{fileName} {
-      // Users can only upload to their own user directory
+      // Citizen can only write to their own directory, with MIME and size constraints
       allow write: if isOwner(userId) && isPermittedType() && isUnderMaxSize();
       
-      // Read access: authenticated users with case access
-      allow read: if isSignedIn();
+      // Read access: only the owner citizen, or authorized officials reviewing the docket
+      allow read: if isOwner(userId) || isAuthorizedOfficial();
       
-      // Delete access: only owner
-      allow delete: if isOwner(userId);
+      // Delete access: only owner or super admin
+      allow delete: if isOwner(userId) || isSuperAdmin();
     }
 
     // Resolution evidence from field officers:
+    // Partitioned by officer UID: resolutions/{userId}/{fileName}
     match /resolutions/{userId}/{fileName} {
       allow write: if isOwner(userId) && isPermittedType() && isUnderMaxSize();
-      allow read: if isSignedIn();
-      allow delete: if isOwner(userId);
+      allow read: if isOwner(userId) || isAuthorizedOfficial();
+      allow delete: if isOwner(userId) || isSuperAdmin();
     }
 
     // Default safety deny

@@ -13,6 +13,7 @@ import {
 import { db, auth, cleanFirestoreData } from '../lib/firebase';
 import { INITIAL_SEED_PROBLEMS } from '../data/seedProblems';
 import { MUNICIPAL_OFFICERS } from '../data/officers';
+import { auditLogService } from './auditLogService';
 import {
   collection,
   doc,
@@ -213,6 +214,25 @@ export const complaintService = {
     }
 
     return list;
+  },
+
+  /**
+   * Fetch sanitized public complaints for transparency dashboard without revealing citizen PII
+   */
+  async getPublicComplaints(limitCount = 50): Promise<Problem[]> {
+    try {
+      const colRef = collection(db, PUBLIC_PROBLEMS_COLLECTION);
+      const q = query(colRef, orderBy('createdAt', 'desc'));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        return snap.docs.map((d) => normalizeProblem(d.data()));
+      }
+    } catch (err) {
+      console.warn('Public complaints query notice:', err);
+    }
+    // Fallback to sanitized local complaints
+    const local = getLocalStoredProblems();
+    return local.map(sanitizeForPublic).map(normalizeProblem);
   },
 
   /**
@@ -442,10 +462,24 @@ export const complaintService = {
       notes: notes || `Case status updated to ${newStatus}.`,
     };
 
-    return this.updateComplaint(id, {
+    const updated = await this.updateComplaint(id, {
       status: newStatus,
       timeline: [...existing.timeline, timelineEvent],
     });
+
+    auditLogService.logAction(
+      'STATUS_CHANGED',
+      'problem',
+      id,
+      `Status changed to "${newStatus}". Notes: ${notes || 'Status updated.'}`,
+      {
+        uid: auth.currentUser?.uid || 'official',
+        name: actorName || auth.currentUser?.displayName || 'Municipal Authority',
+        role: actorRole || 'Official',
+      }
+    ).catch(() => {});
+
+    return updated;
   },
 
   /**
@@ -502,7 +536,21 @@ export const complaintService = {
       updates.deadline = deadline;
     }
 
-    return this.updateComplaint(problemId, updates);
+    const updated = await this.updateComplaint(problemId, updates);
+
+    auditLogService.logAction(
+      'OFFICER_ASSIGNED',
+      'problem',
+      problemId,
+      `Case assigned to ${officerObj.name} (${officerObj.designation}). Deadline: ${deadline || 'Default SLA'}`,
+      {
+        uid: auth.currentUser?.uid || 'supervisor',
+        name: assignedBy || auth.currentUser?.displayName || 'Department Supervisor',
+        role: 'supervisor',
+      }
+    ).catch(() => {});
+
+    return updated;
   },
 
   /**
@@ -538,11 +586,20 @@ export const complaintService = {
       notes: `Resolution work completed. Photographic ground proof submitted: ${resolutionEvidence.notes}`,
     };
 
-    return this.updateComplaint(problemId, {
+    const updated = await this.updateComplaint(problemId, {
       status: 'Citizen Verification',
       resolutionEvidence,
       timeline: [...problem.timeline, timelineEvent],
     });
+
+    auditLogService.logAction(
+      'RESOLUTION_SUBMITTED',
+      'problem',
+      problemId,
+      `Remediation proof submitted by ${resolutionEvidence.submittedBy}. Work order: ${resolutionEvidence.workOrderRef || 'N/A'}`
+    ).catch(() => {});
+
+    return updated;
   },
 
   /**
@@ -596,11 +653,22 @@ export const complaintService = {
         : `Citizen disputed the resolution. Reason: ${verification.disputeReason || 'Unsatisfactory work'}. Case reopened.`,
     };
 
-    return this.updateComplaint(problemId, {
+    const updated = await this.updateComplaint(problemId, {
       status: newStatus,
       citizenVerification,
       timeline: [...problem.timeline, timelineEvent],
     });
+
+    auditLogService.logAction(
+      isAccepted ? 'CASE_RESOLVED' : 'CASE_REOPENED',
+      'problem',
+      problemId,
+      isAccepted
+        ? `Resolution verified by citizen. Rating: ${citizenVerification.satisfactionRating}/5.`
+        : `Resolution disputed: "${verification.disputeReason || 'Unsatisfactory work'}". Case reopened.`
+    ).catch(() => {});
+
+    return updated;
   },
 
   /**

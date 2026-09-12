@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 import { AppNotification } from '../types';
 
 interface Toast {
@@ -13,6 +13,7 @@ interface NotificationContextType {
   unreadCount: number;
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
+  addNotification: (notification: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) => void;
   toasts: Toast[];
   showToast: (type: Toast['type'], title: string, message?: string) => void;
   dismissToast: (id: string) => void;
@@ -60,8 +61,23 @@ const INITIAL_NOTIFICATIONS: AppNotification[] = [
 ];
 
 export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [notifications, setNotifications] = useState<AppNotification[]>(INITIAL_NOTIFICATIONS);
+  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
+    try {
+      const saved = localStorage.getItem('civicbridge_notifications_v1');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {}
+    return INITIAL_NOTIFICATIONS;
+  });
+
   const [toasts, setToasts] = useState<Toast[]>([]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('civicbridge_notifications_v1', JSON.stringify(notifications));
+    } catch {}
+  }, [notifications]);
 
   const unreadCount = notifications.filter((n) => !n.read).length;
 
@@ -73,6 +89,16 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
   const markAllAsRead = () => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+  };
+
+  const addNotification = (item: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) => {
+    const newNotif: AppNotification = {
+      id: `notif-${Date.now()}`,
+      ...item,
+      read: false,
+      timestamp: 'Just now',
+    };
+    setNotifications((prev) => [newNotif, ...prev]);
   };
 
   const showToast = (type: Toast['type'], title: string, message?: string) => {
@@ -96,6 +122,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         unreadCount,
         markAsRead,
         markAllAsRead,
+        addNotification,
         toasts,
         showToast,
         dismissToast,
@@ -103,7 +130,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     >
       {children}
 
-      {/* Toast container */}
+      {/* Toast notifications container */}
       <div
         aria-live="polite"
         className="fixed bottom-5 right-5 z-50 flex flex-col space-y-2 max-w-sm w-full pointer-events-none"
@@ -127,7 +154,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
             </div>
             <button
               onClick={() => dismissToast(toast.id)}
-              className="text-xs font-semibold opacity-70 hover:opacity-100 p-1"
+              className="text-xs font-semibold opacity-70 hover:opacity-100 p-1 cursor-pointer"
               aria-label="Dismiss alert"
             >
               ✕

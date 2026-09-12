@@ -24,6 +24,14 @@ export interface CategoryDistribution {
   color: string;
 }
 
+export interface WardMetric {
+  ward: string;
+  reported: number;
+  resolved: number;
+  inProgress: number;
+  resolutionRate: number;
+}
+
 const CATEGORY_COLORS: Record<string, string> = {
   'Roads & Infrastructure': '#2563eb',
   'Water & Drainage': '#06b6d4',
@@ -196,5 +204,40 @@ export const analyticsService = {
       count: map[cat],
       color: CATEGORY_COLORS[cat] || '#3b82f6',
     }));
+  },
+
+  /**
+   * Real ward performance breakdown calculated from live problems
+   */
+  async getWardPerformance(): Promise<WardMetric[]> {
+    const problems = await complaintService.getComplaints();
+    const map: Record<string, { reported: number; resolved: number; inProgress: number }> = {};
+
+    problems.forEach((p) => {
+      const ward = p.location?.ward || 'General Ward';
+      if (!map[ward]) {
+        map[ward] = { reported: 0, resolved: 0, inProgress: 0 };
+      }
+      map[ward].reported++;
+      if (p.status === 'Resolved') {
+        map[ward].resolved++;
+      } else {
+        map[ward].inProgress++;
+      }
+    });
+
+    const entries = Object.keys(map);
+    return entries.map((ward) => {
+      const data = map[ward];
+      const resolutionRate =
+        data.reported > 0 ? Math.round((data.resolved / data.reported) * 100) : 0;
+      return {
+        ward,
+        reported: data.reported,
+        resolved: data.resolved,
+        inProgress: data.inProgress,
+        resolutionRate,
+      };
+    });
   },
 };

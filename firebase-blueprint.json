@@ -118,6 +118,21 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["id", "title", "department", "status", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable administrative audit log of actions and state modifications",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "action": { "type": "string" },
+        "entityType": { "type": "string" },
+        "entityId": { "type": "string" },
+        "performedBy": { "type": "object" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "action", "entityType", "entityId", "performedBy", "details", "timestamp"]
     }
   },
   "firestore": {
@@ -140,6 +155,10 @@
     "/consultations/{consultationId}": {
       "schema": "Consultation",
       "description": "Policy consultations and citizen polling records"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Immutable administrative audit log trail"
     }
   }
 }

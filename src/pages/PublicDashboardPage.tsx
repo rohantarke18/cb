@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
 import { useLanguage } from '../context/LanguageContext';
-import { analyticsService } from '../services/analyticsService';
+import { analyticsService, WardMetric } from '../services/analyticsService';
+import { complaintService } from '../services/complaintService';
 import { PublicMetrics, ProblemCategory } from '../types';
 import {
   getLocalizedCategory,
@@ -19,6 +21,10 @@ import {
   AlertTriangle,
   Clock,
   Filter,
+  Search,
+  Eye,
+  ExternalLink,
+  ShieldAlert,
 } from 'lucide-react';
 import {
   BarChart,
@@ -40,20 +46,52 @@ const COLORS = ['#2563eb', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4'
 
 export const PublicDashboardPage: React.FC = () => {
   const { t, language } = useLanguage();
+  const navigate = useNavigate();
 
   const [metrics, setMetrics] = useState<PublicMetrics | null>(null);
   const [categoryData, setCategoryData] = useState<any[]>([]);
   const [trends, setTrends] = useState<any[]>([]);
   const [deptData, setDeptData] = useState<any[]>([]);
+  const [wardData, setWardData] = useState<WardMetric[]>([]);
+  const [publicComplaints, setPublicComplaints] = useState<any[]>([]);
   const [selectedPeriod, setSelectedPeriod] = useState('90d');
   const [selectedWard, setSelectedWard] = useState('All Wards');
+  const [quickSearchId, setQuickSearchId] = useState('');
+  const [complaintSearchTerm, setComplaintSearchTerm] = useState('');
 
   useEffect(() => {
     analyticsService.getPublicMetrics().then(setMetrics);
     analyticsService.getCategoryBreakdown().then(setCategoryData);
     analyticsService.getResolutionTrends().then(setTrends);
     analyticsService.getDepartmentPerformance().then(setDeptData);
+    analyticsService.getWardPerformance().then(setWardData);
+    complaintService.getPublicComplaints().then(setPublicComplaints);
   }, []);
+
+  const handleQuickTrackSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (quickSearchId.trim()) {
+      navigate(`/track?id=${encodeURIComponent(quickSearchId.trim())}`);
+    }
+  };
+
+  const filteredPublicComplaints = useMemo(() => {
+    let list = publicComplaints;
+    if (selectedWard !== 'All Wards') {
+      list = list.filter((c) => c.location?.ward === selectedWard);
+    }
+    if (complaintSearchTerm.trim()) {
+      const q = complaintSearchTerm.toLowerCase();
+      list = list.filter(
+        (c) =>
+          c.id?.toLowerCase().includes(q) ||
+          c.title?.toLowerCase().includes(q) ||
+          c.category?.toLowerCase().includes(q) ||
+          c.location?.ward?.toLowerCase().includes(q)
+      );
+    }
+    return list.slice(0, 15);
+  }, [publicComplaints, selectedWard, complaintSearchTerm]);
 
   const localizedCategoryData = useMemo(() => {
     return categoryData.map((c) => ({
@@ -205,6 +243,46 @@ export const PublicDashboardPage: React.FC = () => {
             <span>{language === 'mr' ? 'CSV निर्यात' : language === 'hi' ? 'CSV निर्यात करें' : 'Export CSV'}</span>
           </button>
         </div>
+      </div>
+
+      {/* Public Status Tracker by Complaint ID */}
+      <div className="bg-gradient-to-r from-blue-900 to-indigo-900 rounded-xl p-5 text-white shadow-sm flex flex-col md:flex-row items-center justify-between gap-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Search className="w-4 h-4 text-blue-300" />
+            <h2 className="text-sm font-bold">
+              {language === 'mr'
+                ? 'तक्रार आयडी द्वारे थेट स्थिती ट्रॅकिंग'
+                : language === 'hi'
+                ? 'शिकायत आईडी द्वारा त्वरित स्थिति ट्रैकिंग'
+                : 'Instant Grievance Status Tracker by ID'}
+            </h2>
+          </div>
+          <p className="text-xs text-blue-200">
+            {language === 'mr'
+              ? 'कोणत्याही सार्वजनिक तक्रारीची प्रगती, SLA वेळ आणि निराकरण पुरावा पाहण्यासाठी नोंदणी क्रमांक प्रविष्ट करा.'
+              : language === 'hi'
+              ? 'किसी भी सार्वजनिक शिकायत की प्रगति, SLA समय और समाधान प्रमाण देखने के लिए ट्रैकिंग आईडी दर्ज करें।'
+              : 'Enter any CivicBridge tracking ID (e.g. CIV-2025-...) to view live remediation progress and proof.'}
+          </p>
+        </div>
+
+        <form onSubmit={handleQuickTrackSubmit} className="flex items-center gap-2 w-full md:w-auto">
+          <input
+            type="text"
+            required
+            value={quickSearchId}
+            onChange={(e) => setQuickSearchId(e.target.value)}
+            placeholder="e.g. CIV-2025-..."
+            className="px-3 py-2 text-xs rounded-lg bg-white/10 border border-white/20 text-white placeholder-blue-300 focus:outline-hidden focus:bg-white/20 w-full sm:w-60 font-mono"
+          />
+          <button
+            type="submit"
+            className="px-4 py-2 text-xs font-bold bg-white text-blue-950 rounded-lg hover:bg-blue-50 transition-colors shrink-0 cursor-pointer shadow-xs"
+          >
+            {language === 'mr' ? 'ट्रॅक करा' : language === 'hi' ? 'ट्रैक करें' : 'Track Status'}
+          </button>
+        </form>
       </div>
 
       {/* KPI Blocks */}
@@ -470,6 +548,177 @@ export const PublicDashboardPage: React.FC = () => {
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      {/* Ward Performance Analysis Table */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-3">
+        <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+          <div className="flex items-center gap-2">
+            <MapPin className="w-4 h-4 text-blue-600" />
+            <h3 className="text-sm font-bold text-slate-900">
+              {language === 'mr'
+                ? 'प्रभागस्तरीय कामगिरी आणि निवारण दर'
+                : language === 'hi'
+                ? 'वार्ड-वार प्रदर्शन एवं निवारण दर'
+                : 'Ward-Level Performance & Resolution Rate'}
+            </h3>
+          </div>
+          <span className="text-[11px] text-slate-400">
+            {language === 'mr' ? 'स्थानिक नागरी अहवाल' : language === 'hi' ? 'स्थानीय नागरिक रिपोर्ट' : 'Municipal Ward Analytics'}
+          </span>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs text-left">
+            <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
+              <tr>
+                <th className="p-2.5">Ward</th>
+                <th className="p-2.5">Total Grievances</th>
+                <th className="p-2.5">Resolved</th>
+                <th className="p-2.5">In Progress</th>
+                <th className="p-2.5">Resolution Rate</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {wardData.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="p-4 text-center text-slate-400">
+                    Loading municipal ward metrics...
+                  </td>
+                </tr>
+              ) : (
+                wardData.map((w) => (
+                  <tr key={w.ward} className="hover:bg-slate-50">
+                    <td className="p-2.5 font-medium text-slate-900 flex items-center gap-1.5">
+                      <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
+                      <span>{getLocalizedWard(w.ward, language)}</span>
+                    </td>
+                    <td className="p-2.5 text-slate-600 font-mono">{w.reported}</td>
+                    <td className="p-2.5 text-emerald-600 font-mono font-bold">{w.resolved}</td>
+                    <td className="p-2.5 text-amber-600 font-mono">{w.inProgress}</td>
+                    <td className="p-2.5">
+                      <span className="font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                        {w.resolutionRate}%
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Sanitized Public Transparency Complaints Registry */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+              <Eye className="w-4 h-4 text-indigo-600" />
+              <span>
+                {language === 'mr'
+                  ? 'सार्वजनिक तक्रार नोंदवही (गोपनीयता संरक्षित)'
+                  : language === 'hi'
+                  ? 'सार्वजनिक शिकायत रजिस्टर (गोपनीयता सुरक्षित)'
+                  : 'Public Transparency Grievance Registry'}
+              </span>
+            </h3>
+            <p className="text-[11px] text-slate-500">
+              {language === 'mr'
+                ? 'पारदर्शकतेसाठी सार्वजनिक नोंद. सर्व नागरिकांची वैयक्तिक माहिती, संपर्क क्रमांक आणि खासगी पुरावे आपोआप वगळले आहेत.'
+                : language === 'hi'
+                ? 'पारदर्शिता हेतु सार्वजनिक रिकॉर्ड। नागरिकों की व्यक्तिगत पहचान, संपर्क और निजी साक्ष्य स्वतः हटाए गए हैं।'
+                : 'All citizen personal identity information (name, phone, email, residential address) is scrubbed in accordance with Government Data Privacy regulations.'}
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-400" />
+              <input
+                type="text"
+                value={complaintSearchTerm}
+                onChange={(e) => setComplaintSearchTerm(e.target.value)}
+                placeholder="Filter public records..."
+                className="pl-8 pr-3 py-1.5 text-xs rounded-lg border border-slate-300 bg-slate-50 focus:bg-white focus:outline-blue-600"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Complaints Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs text-left">
+            <thead className="bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
+              <tr>
+                <th className="p-2.5">Tracking ID</th>
+                <th className="p-2.5">Public Issue Title</th>
+                <th className="p-2.5">Category</th>
+                <th className="p-2.5">Ward</th>
+                <th className="p-2.5">Status</th>
+                <th className="p-2.5">Reported</th>
+                <th className="p-2.5 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filteredPublicComplaints.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="p-6 text-center text-slate-400">
+                    No public civic grievances match the current filter.
+                  </td>
+                </tr>
+              ) : (
+                filteredPublicComplaints.map((item) => (
+                  <tr key={item.id} className="hover:bg-slate-50">
+                    <td className="p-2.5 font-mono font-bold text-blue-700">
+                      {item.id}
+                    </td>
+                    <td className="p-2.5 font-medium text-slate-900 max-w-xs truncate">
+                      {item.title}
+                    </td>
+                    <td className="p-2.5 text-slate-600">
+                      {getLocalizedCategory(item.category, language)}
+                    </td>
+                    <td className="p-2.5 text-slate-600">
+                      {item.location?.ward || 'General'}
+                    </td>
+                    <td className="p-2.5">
+                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                        item.status === 'Resolved'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : item.status === 'In Progress'
+                          ? 'bg-blue-100 text-blue-800'
+                          : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        {item.status}
+                      </span>
+                    </td>
+                    <td className="p-2.5 text-slate-400 font-mono text-[11px]">
+                      {item.createdAt ? new Date(item.createdAt).toLocaleDateString() : 'Recent'}
+                    </td>
+                    <td className="p-2.5 text-right">
+                      <Link
+                        to={`/track?id=${encodeURIComponent(item.id)}`}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-100 hover:bg-blue-50 text-slate-700 hover:text-blue-700 font-semibold text-[11px] transition-colors"
+                      >
+                        <span>Track</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </Link>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Privacy badge */}
+        <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center gap-2 text-slate-500 text-[11px]">
+          <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>
+            Strict Privacy Compliance: In accordance with CivicBridge security rules, Citizen names, contact phone/emails, private addresses, citizen dispute notes, and officer internal remarks are never transmitted or exposed in this public directory.
+          </span>
         </div>
       </div>
     </div>

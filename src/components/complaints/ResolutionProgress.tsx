@@ -19,6 +19,7 @@ const STATUS_TO_STEP: Record<ProblemStatus, number> = {
   'Resolution Submitted': 4,
   'Citizen Verification': 5,
   Resolved: 6,
+  Closed: 6,
   Rejected: 1,
 };
 

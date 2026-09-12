@@ -24,6 +24,7 @@ export type ProblemStatus =
   | 'Resolution Submitted'
   | 'Citizen Verification'
   | 'Resolved'
+  | 'Closed'
   | 'Reopened'
   | 'Rejected';
 

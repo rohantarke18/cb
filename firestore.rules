@@ -303,7 +303,16 @@ service cloud.firestore {
     }
 
     // ==========================================
-    // 6. CONNECTION TEST
+    // 6. AUDIT LOGS (ADMINISTRATIVE TRACEABILITY)
+    // ==========================================
+    match /audit_logs/{logId} {
+      allow read: if isDeptAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if false; // Immutable audit trail
+    }
+
+    // ==========================================
+    // 7. CONNECTION TEST
     // ==========================================
     match /_connection_test/{docId} {
       allow read: if true;
