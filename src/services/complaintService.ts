@@ -214,13 +214,14 @@ export const complaintService = {
     const randomDigits = Math.floor(100000 + Math.random() * 900000);
     const generatedId = `CIV-${year}-${randomDigits}`;
 
-    // Perform real AI assessment
-    const aiAssessment = this.generateAiAssessment(
+    // Perform real AI assessment via server-side Gemini route with fallback
+    const aiAssessment = await this.fetchAiAssessment(
       data.title,
       data.description,
       data.category,
       data.impactScope,
-      data.urgency
+      data.urgency,
+      data.location?.ward
     );
 
     // Default SLA deadline (e.g. 3 to 7 days from now depending on priority)
@@ -580,6 +581,49 @@ export const complaintService = {
     return this.updateComplaint(problemId, {
       timeline: [...problem.timeline, timelineEvent],
     });
+  },
+
+  /**
+   * Asynchronous AI assessment calling the full-stack Gemini API route with deterministic fallback
+   */
+  async fetchAiAssessment(
+    title: string,
+    description: string,
+    category: ProblemCategory,
+    impactScope: Problem['impactScope'],
+    urgency: PriorityLevel,
+    ward?: string
+  ): Promise<AiAssessment> {
+    const fallback = this.generateAiAssessment(title, description, category, impactScope, urgency);
+    try {
+      const res = await fetch('/api/ai/classify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          description,
+          category,
+          ward,
+        }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.data) {
+          return {
+            ...fallback,
+            category: (json.data.category as ProblemCategory) || fallback.category,
+            suggestedDepartment: json.data.suggestedDepartment || fallback.suggestedDepartment,
+            suggestedPriority: json.data.suggestedPriority || fallback.suggestedPriority,
+            priorityScore: json.data.priorityScore ?? fallback.priorityScore,
+            reasoning: json.data.reasoning?.length ? json.data.reasoning : fallback.reasoning,
+            keyIdentifiedEntities: json.data.keyIdentifiedEntities?.length ? json.data.keyIdentifiedEntities : fallback.keyIdentifiedEntities,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('AI API classify endpoint notice, using deterministic engine:', e);
+    }
+    return fallback;
   },
 
   /**

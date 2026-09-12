@@ -9,7 +9,7 @@ import {
   testFirestoreConnection,
   cleanFirestoreData,
 } from '../lib/firebase';
-import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { onAuthStateChanged, User as FirebaseUser, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 
 interface AuthContextType {
@@ -20,6 +20,8 @@ interface AuthContextType {
   isExpert: boolean;
   loading: boolean;
   loginWithGoogle: (targetRole?: UserRole) => Promise<User>;
+  loginWithEmail: (email: string, pass: string) => Promise<User>;
+  registerWithEmail: (email: string, pass: string, name: string, phone?: string) => Promise<User>;
   loginAsCitizen: (emailOrPhone?: string, name?: string) => Promise<User>;
   loginWithPhone: (phone: string, otp: string) => Promise<User>;
   loginAsOfficial: (role: UserRole, email: string, name?: string) => Promise<User>;
@@ -158,6 +160,81 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch (e) {
       console.warn('Firestore setDoc user warning:', e);
     }
+
+    setUser(userData);
+    localStorage.setItem('civicbridge_active_user', JSON.stringify(userData));
+    return userData;
+  };
+
+  const registerWithEmail = async (
+    email: string,
+    pass: string,
+    name: string,
+    phone?: string
+  ): Promise<User> => {
+    const cred = await createUserWithEmailAndPassword(auth, email.trim(), pass);
+    const fbUser = cred.user;
+    const cleanName = name.trim() || 'Citizen User';
+
+    const userData: User = {
+      id: fbUser.uid,
+      name: cleanName,
+      email: fbUser.email || email.trim(),
+      phone: phone || '+91 98200 00000',
+      role: 'citizen',
+      wardOrDistrict: 'Ward 8 (CIDCO / Kranti Chowk)',
+    };
+
+    try {
+      const userRef = doc(db, 'users', fbUser.uid);
+      await setDoc(
+        userRef,
+        cleanFirestoreData({
+          ...userData,
+          createdAt: new Date().toISOString(),
+        }),
+        { merge: true }
+      );
+    } catch (e) {
+      console.warn('Firestore user profile creation notice:', e);
+    }
+
+    setUser(userData);
+    localStorage.setItem('civicbridge_active_user', JSON.stringify(userData));
+    return userData;
+  };
+
+  const loginWithEmail = async (email: string, pass: string): Promise<User> => {
+    const cred = await signInWithEmailAndPassword(auth, email.trim(), pass);
+    const fbUser = cred.user;
+
+    let roleToAssign: UserRole = 'citizen';
+    let existingProfile: Partial<User> = {};
+
+    try {
+      const userRef = doc(db, 'users', fbUser.uid);
+      const snap = await getDoc(userRef);
+      if (snap.exists()) {
+        existingProfile = snap.data() as User;
+        if (existingProfile.role) {
+          roleToAssign = existingProfile.role;
+        }
+      }
+    } catch (e) {
+      console.warn('Could not read existing profile from Firestore:', e);
+    }
+
+    const userData: User = {
+      id: fbUser.uid,
+      name: fbUser.displayName || existingProfile.name || 'Citizen User',
+      email: fbUser.email || email.trim(),
+      role: roleToAssign,
+      phone: existingProfile.phone || '+91 98200 00000',
+      wardOrDistrict: existingProfile.wardOrDistrict || 'Ward 8 (CIDCO / Kranti Chowk)',
+      department: existingProfile.department,
+      designation: existingProfile.designation,
+      avatar: fbUser.photoURL || existingProfile.avatar,
+    };
 
     setUser(userData);
     localStorage.setItem('civicbridge_active_user', JSON.stringify(userData));
@@ -333,6 +410,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isExpert,
         loading,
         loginWithGoogle,
+        loginWithEmail,
+        registerWithEmail,
         loginAsCitizen,
         loginWithPhone,
         loginAsOfficial,

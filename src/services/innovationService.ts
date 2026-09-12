@@ -7,6 +7,7 @@ import {
   EvidenceItem,
 } from '../types';
 import { db, cleanFirestoreData } from '../lib/firebase';
+import { INITIAL_SEED_INNOVATIONS } from '../data/seedInnovations';
 import {
   collection,
   doc,
@@ -44,10 +45,21 @@ export const innovationService = {
       const q = query(colRef, orderBy('createdAt', 'desc'));
       const snapshot = await getDocs(q);
 
-      return snapshot.docs.map((d) => normalizeInnovation(d.data()));
+      if (!snapshot.empty) {
+        return snapshot.docs.map((d) => normalizeInnovation(d.data()));
+      }
+
+      // Seed initial innovations if empty
+      const seeded = INITIAL_SEED_INNOVATIONS.map(normalizeInnovation);
+      Promise.all(
+        seeded.map((item) =>
+          setDoc(doc(db, INNOVATIONS_COLLECTION, item.id), cleanFirestoreData(item)).catch(() => {})
+        )
+      ).catch(() => {});
+      return seeded;
     } catch (err) {
-      console.error('Error fetching innovations from Firestore:', err);
-      return [];
+      console.warn('Falling back to local innovations list:', err);
+      return INITIAL_SEED_INNOVATIONS.map(normalizeInnovation);
     }
   },
 

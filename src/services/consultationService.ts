@@ -1,5 +1,6 @@
 import { Consultation, ConsultationQuestion, ConsultationStatus } from '../types';
 import { db, cleanFirestoreData } from '../lib/firebase';
+import { INITIAL_SEED_CONSULTATIONS } from '../data/seedConsultations';
 import {
   collection,
   doc,
@@ -23,10 +24,21 @@ export const consultationService = {
       const colRef = collection(db, CONSULTATIONS_COLLECTION);
       const q = query(colRef, orderBy('createdAt', 'desc'));
       const snap = await getDocs(q);
-      return snap.docs.map((d) => d.data() as Consultation);
+
+      if (!snap.empty) {
+        return snap.docs.map((d) => d.data() as Consultation);
+      }
+
+      // Seed initial consultations if empty
+      Promise.all(
+        INITIAL_SEED_CONSULTATIONS.map((c) =>
+          setDoc(doc(db, CONSULTATIONS_COLLECTION, c.id), cleanFirestoreData(c)).catch(() => {})
+        )
+      ).catch(() => {});
+      return INITIAL_SEED_CONSULTATIONS;
     } catch (err) {
-      console.error('Error fetching consultations:', err);
-      return [];
+      console.warn('Falling back to local consultations list:', err);
+      return INITIAL_SEED_CONSULTATIONS;
     }
   },
 

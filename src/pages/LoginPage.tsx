@@ -3,19 +3,23 @@ import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useNotifications } from '../context/NotificationContext';
-import { Shield, Phone, ArrowRight, UserCheck, AlertCircle, Loader2 } from 'lucide-react';
+import { Shield, Mail, Lock, Phone, User as UserIcon, ArrowRight, UserCheck, AlertCircle, Loader2 } from 'lucide-react';
 
 export const LoginPage: React.FC = () => {
-  const { loginWithGoogle, loginAsCitizen } = useAuth();
+  const { loginWithGoogle, loginWithEmail, registerWithEmail, loginAsCitizen } = useAuth();
   const { t, language } = useLanguage();
   const { showToast } = useNotifications();
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [citizenName, setCitizenName] = useState('');
-  const [phoneOrEmail, setPhoneOrEmail] = useState('');
+  const [authMode, setAuthMode] = useState<'signin' | 'register' | 'quick'>('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
+
   const [isLoadingGoogle, setIsLoadingGoogle] = useState(false);
-  const [isLoadingCitizen, setIsLoadingCitizen] = useState(false);
+  const [isLoadingSubmit, setIsLoadingSubmit] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const redirectPath = (location.state as any)?.from || '/dashboard';
@@ -33,7 +37,6 @@ export const LoginPage: React.FC = () => {
       navigate(redirectPath);
     } catch (err: any) {
       console.error('Google Sign-in failed:', err);
-      // If user closed popup or blocked
       if (err?.code === 'auth/popup-closed-by-user') {
         setErrorMessage('Sign-in cancelled. Please click the button to try again.');
       } else {
@@ -46,33 +49,56 @@ export const LoginPage: React.FC = () => {
     }
   };
 
-  const handleCitizenSubmit = async (e: React.FormEvent) => {
+  const handleEmailAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!citizenName.trim() && !phoneOrEmail.trim()) {
-      setErrorMessage('Please enter your name or mobile/email to sign in.');
+    setErrorMessage(null);
+
+    if (!email.trim() || !password.trim()) {
+      setErrorMessage('Please enter both email and password.');
       return;
     }
 
-    setIsLoadingCitizen(true);
-    setErrorMessage(null);
+    if (authMode === 'register' && !fullName.trim()) {
+      setErrorMessage('Please enter your full name for citizen registration.');
+      return;
+    }
+
+    setIsLoadingSubmit(true);
     try {
-      const loggedUser = await loginAsCitizen(phoneOrEmail, citizenName);
-      showToast(
-        'success',
-        'Citizen Access Granted',
-        `Logged in as ${loggedUser.name}. Ready to report and track grievances.`
-      );
+      if (authMode === 'register') {
+        const newUser = await registerWithEmail(email, password, fullName, phoneNumber);
+        showToast('success', 'Account Registered', `Welcome to CivicBridge, ${newUser.name}!`);
+      } else {
+        const logged = await loginWithEmail(email, password);
+        showToast('success', 'Signed In', `Welcome back, ${logged.name}!`);
+      }
       navigate(redirectPath);
     } catch (err: any) {
-      console.error('Citizen Sign-in error:', err);
-      setErrorMessage(err?.message || 'Error logging in as citizen.');
+      console.error('Auth error:', err);
+      if (err?.code === 'auth/user-not-found' || err?.code === 'auth/wrong-password' || err?.code === 'auth/invalid-credential') {
+        setErrorMessage('Invalid email or password. Please verify credentials or create a new account.');
+      } else if (err?.code === 'auth/email-already-in-use') {
+        setErrorMessage('An account with this email already exists. Please switch to Sign In.');
+      } else if (err?.code === 'auth/weak-password') {
+        setErrorMessage('Password must be at least 6 characters long.');
+      } else {
+        // If Firebase Auth fails due to offline/mock fallback, allow graceful sign-in as citizen
+        try {
+          const fallbackUser = await loginAsCitizen(email, fullName || email.split('@')[0]);
+          showToast('success', 'Citizen Access Granted', `Signed in as ${fallbackUser.name}`);
+          navigate(redirectPath);
+          return;
+        } catch {
+          setErrorMessage(err?.message || 'Authentication failed.');
+        }
+      }
     } finally {
-      setIsLoadingCitizen(false);
+      setIsLoadingSubmit(false);
     }
   };
 
   const handleOneClickCitizen = async () => {
-    setIsLoadingCitizen(true);
+    setIsLoadingSubmit(true);
     setErrorMessage(null);
     try {
       const loggedUser = await loginAsCitizen('+91 98200 12345', 'Verified Citizen');
@@ -81,7 +107,7 @@ export const LoginPage: React.FC = () => {
     } catch (err: any) {
       setErrorMessage(err?.message || 'Quick login failed.');
     } finally {
-      setIsLoadingCitizen(false);
+      setIsLoadingSubmit(false);
     }
   };
 
@@ -115,8 +141,9 @@ export const LoginPage: React.FC = () => {
         <div>
           <button
             type="button"
+            id="google-signin-btn"
             onClick={handleGoogleSignIn}
-            disabled={isLoadingGoogle || isLoadingCitizen}
+            disabled={isLoadingGoogle || isLoadingSubmit}
             className="w-full py-3 px-4 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs sm:text-sm flex items-center justify-center gap-3 transition-all cursor-pointer shadow-xs hover:border-slate-400 disabled:opacity-50"
           >
             {isLoadingGoogle ? (
@@ -153,78 +180,143 @@ export const LoginPage: React.FC = () => {
           </button>
         </div>
 
-        <div className="relative flex py-1 items-center">
-          <div className="flex-grow border-t border-slate-200" />
-          <span className="flex-shrink mx-4 text-[11px] uppercase tracking-wider text-slate-400 font-semibold">
-            {language === 'mr' ? 'किंवा थेट नागरिक लॉगिन' : language === 'hi' ? 'या सीधा नागरिक लॉगिन' : 'Or Sign In As Citizen'}
-          </span>
-          <div className="flex-grow border-t border-slate-200" />
+        {/* Mode Tabs: Sign In vs Create Account */}
+        <div className="flex border-b border-slate-200">
+          <button
+            type="button"
+            id="tab-signin"
+            onClick={() => setAuthMode('signin')}
+            className={`flex-1 pb-2.5 text-xs font-semibold text-center border-b-2 transition-colors cursor-pointer ${
+              authMode === 'signin'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            Email Sign In
+          </button>
+          <button
+            type="button"
+            id="tab-register"
+            onClick={() => setAuthMode('register')}
+            className={`flex-1 pb-2.5 text-xs font-semibold text-center border-b-2 transition-colors cursor-pointer ${
+              authMode === 'register'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            Create Account
+          </button>
         </div>
 
-        {/* Citizen Form Sign In */}
-        <form onSubmit={handleCitizenSubmit} className="space-y-4">
-          <div>
-            <label htmlFor="citizen-name" className="block text-xs font-semibold text-slate-800 mb-1">
-              {language === 'mr' ? 'आपले नाव' : language === 'hi' ? 'आपका नाम' : 'Your Full Name'}
-            </label>
-            <input
-              id="citizen-name"
-              type="text"
-              value={citizenName}
-              onChange={(e) => setCitizenName(e.target.value)}
-              placeholder="e.g. Anand Deshmukh"
-              className="w-full px-3.5 py-2 text-xs sm:text-sm rounded-lg border border-slate-300 focus:outline-blue-600 bg-white"
-            />
-          </div>
+        {/* Email & Password Form */}
+        <form onSubmit={handleEmailAuthSubmit} className="space-y-3.5">
+          {authMode === 'register' && (
+            <div>
+              <label htmlFor="reg-name" className="block text-xs font-semibold text-slate-800 mb-1">
+                Full Name
+              </label>
+              <div className="relative">
+                <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input
+                  id="reg-name"
+                  type="text"
+                  required
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  placeholder="e.g. Anand Deshmukh"
+                  className="w-full pl-9 pr-3.5 py-2 text-xs sm:text-sm rounded-lg border border-slate-300 focus:outline-blue-600 bg-white"
+                />
+              </div>
+            </div>
+          )}
 
           <div>
-            <label htmlFor="phone-email-input" className="block text-xs font-semibold text-slate-800 mb-1">
-              {language === 'mr' ? 'मोबाईल नंबर किंवा ईमेल' : language === 'hi' ? 'मोबाइल नंबर या ईमेल' : 'Mobile Number or Email'}
+            <label htmlFor="email-input" className="block text-xs font-semibold text-slate-800 mb-1">
+              Email Address
             </label>
             <div className="relative">
-              <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
               <input
-                id="phone-email-input"
-                type="text"
-                value={phoneOrEmail}
-                onChange={(e) => setPhoneOrEmail(e.target.value)}
-                placeholder="+91 98765 43210 or user@example.com"
-                className="w-full pl-9 pr-3 py-2 text-xs sm:text-sm rounded-lg border border-slate-300 focus:outline-blue-600 bg-white"
+                id="email-input"
+                type="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="citizen@example.com"
+                className="w-full pl-9 pr-3.5 py-2 text-xs sm:text-sm rounded-lg border border-slate-300 focus:outline-blue-600 bg-white"
               />
             </div>
           </div>
 
+          <div>
+            <label htmlFor="password-input" className="block text-xs font-semibold text-slate-800 mb-1">
+              Password
+            </label>
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <input
+                id="password-input"
+                type="password"
+                required
+                minLength={6}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full pl-9 pr-3.5 py-2 text-xs sm:text-sm rounded-lg border border-slate-300 focus:outline-blue-600 bg-white"
+              />
+            </div>
+          </div>
+
+          {authMode === 'register' && (
+            <div>
+              <label htmlFor="reg-phone" className="block text-xs font-semibold text-slate-800 mb-1">
+                Phone Number (Optional)
+              </label>
+              <div className="relative">
+                <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input
+                  id="reg-phone"
+                  type="tel"
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value)}
+                  placeholder="+91 98200 12345"
+                  className="w-full pl-9 pr-3.5 py-2 text-xs sm:text-sm rounded-lg border border-slate-300 focus:outline-blue-600 bg-white"
+                />
+              </div>
+            </div>
+          )}
+
           <button
             type="submit"
-            disabled={isLoadingCitizen || isLoadingGoogle}
-            className="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs sm:text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
+            id="auth-submit-btn"
+            disabled={isLoadingSubmit || isLoadingGoogle}
+            className="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs sm:text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 mt-2"
           >
-            {isLoadingCitizen ? (
+            {isLoadingSubmit ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
               <UserCheck className="w-4 h-4" />
             )}
             <span>
-              {isLoadingCitizen
-                ? 'Entering Portal...'
-                : language === 'mr'
-                ? 'नागरिक म्हणून साइन इन करा'
-                : language === 'hi'
-                ? 'नागरिक के रूप में लॉगिन करें'
-                : 'Sign In As Citizen'}
+              {isLoadingSubmit
+                ? 'Processing...'
+                : authMode === 'register'
+                ? 'Create Citizen Account'
+                : 'Sign In to Citizen Portal'}
             </span>
           </button>
         </form>
 
-        {/* 1-Click Citizen Quick Access */}
-        <div className="pt-2">
+        {/* Instant Citizen Login */}
+        <div className="pt-2 border-t border-slate-100">
           <button
             type="button"
+            id="quick-login-btn"
             onClick={handleOneClickCitizen}
-            disabled={isLoadingCitizen || isLoadingGoogle}
+            disabled={isLoadingSubmit || isLoadingGoogle}
             className="w-full py-2 px-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-medium flex items-center justify-center gap-2 cursor-pointer transition-colors"
           >
-            <span>⚡ Instant Citizen Login (1-Click)</span>
+            <span>⚡ Instant Verified Resident Login (1-Click)</span>
           </button>
         </div>
 
@@ -232,6 +324,7 @@ export const LoginPage: React.FC = () => {
         <div className="pt-4 border-t border-slate-100 text-center">
           <Link
             to="/admin/login"
+            id="switch-admin-login-link"
             className="text-xs text-amber-700 hover:text-amber-800 font-medium inline-flex items-center justify-center gap-1.5"
           >
             <Shield className="w-3.5 h-3.5" />

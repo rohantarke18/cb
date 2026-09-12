@@ -7,9 +7,12 @@ import {
   signOut,
   onAuthStateChanged,
   updateProfile,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
 } from 'firebase/auth';
 import type { User as FirebaseUser } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Initialize Firebase App
@@ -24,6 +27,9 @@ googleProvider.setCustomParameters({ prompt: 'select_account' });
 export const db = firebaseConfig.firestoreDatabaseId
   ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
   : getFirestore(app);
+
+// Firebase Storage for verified civic evidence & documents
+export const storage = getStorage(app);
 
 // Verification connection check
 export async function testFirestoreConnection() {
