@@ -1,0 +1,117 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "CivicBridge user profile record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["citizen", "officer", "department_admin", "super_admin", "expert"] },
+        "department": { "type": "string" },
+        "designation": { "type": "string" },
+        "wardOrDistrict": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "name", "role", "createdAt"]
+    },
+    "Problem": {
+      "title": "Problem",
+      "description": "Citizen logged civic grievance and resolution docket",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "department": { "type": "string" },
+        "location": { "type": "object" },
+        "impactScope": { "type": "string" },
+        "urgency": { "type": "string" },
+        "priority": { "type": "string" },
+        "status": { "type": "string" },
+        "evidence": { "type": "array" },
+        "aiAssessment": { "type": "object" },
+        "timeline": { "type": "array" },
+        "deadline": { "type": "string" },
+        "assignedOfficer": { "type": "object" },
+        "resolutionEvidence": { "type": "object" },
+        "citizenVerification": { "type": "object" },
+        "reporterUid": { "type": "string" },
+        "reporterName": { "type": "string" },
+        "reporterEmail": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "description", "category", "status", "createdAt"]
+    },
+    "Innovation": {
+      "title": "Innovation",
+      "description": "Citizen innovation submission and co-creation project",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string" },
+        "stage": { "type": "string" },
+        "submitterUid": { "type": "string" },
+        "submitterName": { "type": "string" },
+        "submitterType": { "type": "string" },
+        "targetWard": { "type": "string" },
+        "costEstimate": { "type": "string" },
+        "feasibilityScore": { "type": "number" },
+        "votes": { "type": "number" },
+        "voters": { "type": "array" },
+        "reviews": { "type": "array" },
+        "comments": { "type": "array" },
+        "pilotDetails": { "type": "string" },
+        "grantAmount": { "type": "string" },
+        "recognitionBadge": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "description", "category", "stage", "createdAt"]
+    },
+    "Consultation": {
+      "title": "Consultation",
+      "description": "Digital municipal policy consultation and citizen polling docket",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "department": { "type": "string" },
+        "topic": { "type": "string" },
+        "status": { "type": "string" },
+        "summary": { "type": "string" },
+        "deadline": { "type": "string" },
+        "totalResponses": { "type": "number" },
+        "questions": { "type": "array" },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "department", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile directory"
+    },
+    "/problems/{problemId}": {
+      "schema": "Problem",
+      "description": "Civic grievances collection"
+    },
+    "/innovations/{innovationId}": {
+      "schema": "Innovation",
+      "description": "Citizen innovation project records"
+    },
+    "/consultations/{consultationId}": {
+      "schema": "Consultation",
+      "description": "Policy consultations and citizen polling records"
+    }
+  }
+}
